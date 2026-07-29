@@ -1,0 +1,6 @@
+[submodule "repo/backend"]
+	path = repo/backend
+	url = git@github.com:pcthuoc/be_autotimelapse.git
+[submodule "repo/frontend"]
+	path = repo/frontend
+	url = https://github.com/pcthuoc/fe_autotimelapse.git

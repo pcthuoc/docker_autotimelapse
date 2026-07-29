@@ -1,0 +1,33 @@
+#!/bin/bash
+set -e
+
+# Chuyển về thư mục gốc của dự án
+ROOT_DIR="$(cd "$(dirname "$(dirname "$0")")" && pwd)"
+cd "$ROOT_DIR"
+
+echo "==> Đang khởi tạo thiết lập dự án AutoTimelapse..."
+
+# 1. Tạo các thư mục lưu trữ dữ liệu nếu chưa tồn tại
+mkdir -p data/mosquitto/data data/mosquitto/log
+
+# 2. Tự động copy local_settings.py từ thư mục environment vào repo/backend/autotimelapse/
+if [ -f "environment/local_settings.py" ]; then
+    echo "--> Copying environment/local_settings.py -> repo/backend/autotimelapse/local_settings.py"
+    cp environment/local_settings.py repo/backend/autotimelapse/local_settings.py
+elif [ -f "environment/local_settings.py.example" ]; then
+    echo "--> Copying environment/local_settings.py.example -> repo/backend/autotimelapse/local_settings.py"
+    cp environment/local_settings.py.example repo/backend/autotimelapse/local_settings.py
+fi
+
+# 3. Tự động đồng bộ file .env nếu chưa có
+if [ ! -f "environment/site.env" ] && [ -f "environment/site.env.example" ]; then
+    echo "--> Tạo environment/site.env từ file mẫu..."
+    cp environment/site.env.example environment/site.env
+fi
+
+if [ ! -f ".env" ] && [ -f "environment/site.env" ]; then
+    echo "--> Đồng bộ file .env tại thư mục gốc..."
+    cp environment/site.env .env
+fi
+
+echo "✅ Khởi tạo dự án hoàn tất thành công!"

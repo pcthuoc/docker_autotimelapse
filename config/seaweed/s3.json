@@ -1,0 +1,53 @@
+{
+  "identities": [
+    {
+      "name": "admin",
+      "comment": "Full access - quan tri he thong",
+      "credentials": [
+        {
+          "accessKey": "atl_admin_98568b04f027",
+          "secretKey": "MDr62YtQcdK-_DHdiiMbuC6OjFnIjlVWSJT5gDC8qiA"
+        }
+      ],
+      "actions": [
+        "Admin",
+        "Read",
+        "Write",
+        "List",
+        "Tagging"
+      ]
+    },
+    {
+      "name": "camera-service",
+      "comment": "Thiet bi camera upload anh",
+      "credentials": [
+        {
+          "accessKey": "atl_cam_a8b70af247f2",
+          "secretKey": "KLm-0q67B0vVy0XrltOzeBHofzEoJ1XgtIYQWfyeNy4"
+        }
+      ],
+      "actions": [
+        "Write:media",
+        "Read:media",
+        "List:media"
+      ]
+    },
+    {
+      "name": "api-service",
+      "comment": "Backend API doc/ghi/xoa media",
+      "credentials": [
+        {
+          "accessKey": "atl_api_f47b8b69ca6e",
+          "secretKey": "RuknSq0JJM6RsIt3DnFf0ZcHUfTlsAN1qDWCtLIankM"
+        }
+      ],
+      "actions": [
+        "Read:media",
+        "Write:media",
+        "List:media",
+        "Delete:media",
+        "Tagging:media"
+      ]
+    }
+  ]
+}

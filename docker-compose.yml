@@ -1,0 +1,240 @@
+services:
+  redis:
+    container_name: atl-redis
+    image: redis:alpine
+    restart: unless-stopped
+    networks: [app-net]
+
+  mosquitto:
+    container_name: atl-mosquitto
+    image: eclipse-mosquitto:2
+    restart: unless-stopped
+    ports:
+      - "1884:1883"
+    volumes:
+      - ./config/mosquitto:/mosquitto/config
+      - ./data/mosquitto/data:/mosquitto/data
+      - ./data/mosquitto/log:/mosquitto/log
+    env_file:
+      - ./environment/site.env
+    networks: [app-net]
+
+  site:
+    container_name: atl-site
+    build:
+      context: .
+      dockerfile: ./site/Dockerfile
+    image: atl-site:latest
+    init: true
+    restart: unless-stopped
+    command: >
+      sh -c "python manage.py migrate &&
+             python manage.py collectstatic --noinput &&
+             python manage.py runserver 0.0.0.0:8000"
+    volumes:
+      - ./repo/backend:/app
+      - static_data:/app/staticfiles
+    working_dir: /app
+    env_file:
+      - ./environment/site.env
+    environment:
+      DJANGO_SETTINGS_MODULE: autotimelapse.settings
+    networks: [app-net, seaweed-net]
+    depends_on:
+      - postgres
+      - redis
+      - mosquitto
+      - seaweed-filer
+
+  nginx:
+    container_name: atl-nginx
+    image: nginx:alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./config/nginx/conf.d/:/etc/nginx/conf.d/
+      - static_data:/static:ro
+      - ./repo/frontend/dist:/frontend:ro
+    networks: [app-net]
+    depends_on: [site]
+
+  mqtt_service:
+    container_name: atl-mqtt-service
+    build:
+      context: .
+      dockerfile: ./mqtt_service/Dockerfile
+    image: atl-mqtt-service:latest
+    init: true
+    restart: unless-stopped
+    command: python manage.py mqtt_listen
+    volumes:
+      - ./repo/backend:/app
+    working_dir: /app
+    env_file:
+      - ./environment/site.env
+    environment:
+      DJANGO_SETTINGS_MODULE: autotimelapse.settings
+    networks: [app-net]
+    depends_on: [postgres, redis, mosquitto]
+
+  celery_worker:
+    container_name: atl-celery-worker
+    build:
+      context: .
+      dockerfile: ./site/Dockerfile
+    image: atl-site:latest
+    init: true
+    restart: unless-stopped
+    command: celery -A autotimelapse worker -l info -c 2
+    volumes:
+      - ./repo/backend:/app
+    working_dir: /app
+    env_file:
+      - ./environment/site.env
+    environment:
+      DJANGO_SETTINGS_MODULE: autotimelapse.settings
+    networks: [app-net, seaweed-net]
+    depends_on: [postgres, redis, site]
+
+  celery_beat:
+    container_name: atl-celery-beat
+    build:
+      context: .
+      dockerfile: ./site/Dockerfile
+    image: atl-site:latest
+    init: true
+    restart: unless-stopped
+    command: celery -A autotimelapse beat -l info
+    volumes:
+      - ./repo/backend:/app
+    working_dir: /app
+    env_file:
+      - ./environment/site.env
+    environment:
+      DJANGO_SETTINGS_MODULE: autotimelapse.settings
+    networks: [app-net]
+    depends_on: [postgres, redis, site]
+
+  # ----------------------------------------------------------------
+  # TANG 1: Control plane - quan ly topology cua cluster
+  # ----------------------------------------------------------------
+  seaweed-master:
+    image: chrislusf/seaweedfs:4.40
+    container_name: seaweed-master
+    command: >
+      master
+        -ip=seaweed-master
+        -ip.bind=0.0.0.0
+        -mdir=/data
+        -defaultReplication=000
+        -volumeSizeLimitMB=1024
+        -metricsPort=9324
+    ports:
+      - "9333:9333"    # HTTP API + UI
+      - "19333:19333"  # gRPC
+      - "9324:9324"    # Prometheus metrics
+    volumes:
+      - seaweed_master_data:/data
+    networks:
+      - seaweed-net
+    restart: unless-stopped
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9333/cluster/status"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ----------------------------------------------------------------
+  # TANG 2: Storage plane - noi luu file thuc te (anh, video)
+  # ----------------------------------------------------------------
+  seaweed-volume:
+    image: chrislusf/seaweedfs:4.40
+    container_name: seaweed-volume
+    command: >
+      volume
+        -mserver=seaweed-master:9333
+        -ip=seaweed-volume
+        -ip.bind=0.0.0.0
+        -port=8080
+        -dir=/data
+        -max=50
+        -metricsPort=9325
+    ports:
+      - "8080:8080"    # HTTP API
+      - "18080:18080"  # gRPC
+      - "9325:9325"    # Prometheus metrics
+    volumes:
+      - seaweed_volume_data:/data
+    networks:
+      - seaweed-net
+    depends_on: [seaweed-master]
+    restart: unless-stopped
+    stop_grace_period: 30s
+
+  # ----------------------------------------------------------------
+  # TANG 3: Access plane - filesystem view + S3 gateway
+  # ----------------------------------------------------------------
+  seaweed-filer:
+    image: chrislusf/seaweedfs:4.40
+    container_name: seaweed-filer
+    command: >
+      filer
+        -master=seaweed-master:9333
+        -ip=seaweed-filer
+        -ip.bind=0.0.0.0
+        -metricsPort=9326
+        -s3
+        -s3.port=8333
+        -s3.config=/config/s3.json
+    ports:
+      - "8888:8888"    # Filer HTTP
+      - "18888:18888"  # Filer gRPC
+      - "8333:8333"    # S3 gateway
+      - "9326:9326"    # Prometheus metrics
+    tty: true
+    stdin_open: true
+    volumes:
+      - seaweed_filer_data:/data
+      - ./config/seaweed:/config:ro
+    networks:
+      - seaweed-net
+    depends_on: [seaweed-master, seaweed-volume]
+    restart: unless-stopped
+    stop_grace_period: 30s
+
+  # ----------------------------------------------------------------
+  # DB plane - metadata store
+  # ----------------------------------------------------------------
+  postgres:
+    container_name: atl-postgres
+    image: postgres:16-alpine
+    env_file:
+      - ./environment/site.env
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - seaweed-net
+      - app-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U atl_user -d autotimelapse"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  static_data:
+  postgres_data:
+  seaweed_master_data:
+  seaweed_volume_data:
+  seaweed_filer_data:
+
+networks:
+  app-net:
+    driver: bridge
+  seaweed-net:
+    driver: bridge

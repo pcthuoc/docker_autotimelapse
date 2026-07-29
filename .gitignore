@@ -1,0 +1,21 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Host persistent data & secrets
+data/
+.env
+environment/*.env
+!environment/*.env.example
+!environment/local_settings.py.example
