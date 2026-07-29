@@ -3,4 +3,4 @@
 	url = git@github.com:pcthuoc/be_autotimelapse.git
 [submodule "repo/frontend"]
 	path = repo/frontend
-	url = https://github.com/pcthuoc/fe_autotimelapse.git
+	url = git@github.com:pcthuoc/fe_autotimelapse.git

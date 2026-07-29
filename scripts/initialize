@@ -7,8 +7,13 @@ cd "$ROOT_DIR"
 
 echo "==> Đang khởi tạo thiết lập dự án AutoTimelapse..."
 
-# 1. Tạo các thư mục lưu trữ dữ liệu nếu chưa tồn tại
-mkdir -p data/mosquitto/data data/mosquitto/log
+# 1. Tạo tất cả các thư mục lưu trữ dữ liệu local trong data/
+mkdir -p data/postgres \
+         data/seaweed/master \
+         data/seaweed/volume \
+         data/seaweed/filer \
+         data/mosquitto/data \
+         data/mosquitto/log
 
 # 2. Tự động copy local_settings.py từ thư mục environment vào repo/backend/autotimelapse/
 if [ -f "environment/local_settings.py" ]; then
@@ -28,6 +33,19 @@ fi
 if [ ! -f ".env" ] && [ -f "environment/site.env" ]; then
     echo "--> Đồng bộ file .env tại thư mục gốc..."
     cp environment/site.env .env
+fi
+
+# 4. Tự động khởi tạo S3 Bucket 'media' nếu container đang chạy
+if docker ps --format '{{.Names}}' | grep -q "atl-site"; then
+    echo "--> Đang đảm bảo S3 Bucket 'media' tồn tại trên SeaweedFS..."
+    docker exec atl-site python manage.py shell -c "
+import boto3
+admin_s3 = boto3.client('s3', endpoint_url='http://seaweed-filer:8333', aws_access_key_id='atl_admin_98568b04f027', aws_secret_access_key='MDr62YtQcdK-_DHdiiMbuC6OjFnIjlVWSJT5gDC8qiA')
+buckets = [b['Name'] for b in admin_s3.list_buckets().get('Buckets', [])]
+if 'media' not in buckets:
+    admin_s3.create_bucket(Bucket='media')
+    print('Bucket media created.')
+" 2>/dev/null || true
 fi
 
 echo "✅ Khởi tạo dự án hoàn tất thành công!"
