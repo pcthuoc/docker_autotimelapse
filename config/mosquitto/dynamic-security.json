@@ -110,6 +110,8 @@
 			"username":	"admin",
 			"textname":	"Admin user",
 			"roles":	[{
+					"rolename":	"dynsec-admin"
+				}, {
 					"rolename":	"camera-server"
 				}, {
 					"rolename":	"super-admin"
