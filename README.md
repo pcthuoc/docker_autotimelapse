@@ -122,7 +122,7 @@ git push -u origin master
 
 ---
 
-## ⚡ 6. Kế Hoạch Kiến Trúc Phần Cứng 2 Lõi (ESP32-S3 + CM4) & Luồng Nguồn
+## ⚡ 6. Kế Hoạch Kiến Trúc Phần Cứng 2 Lõi (ESP32-S3 + CM4) & Giao Tiếp Nội Bộ
 
 Hệ thống hỗ trợ cơ chế hoạt động **2 Lõi vật lý**: **ESP32-S3** (Watchdog/Quản lý nguồn Always-On) và **Raspberry Pi CM4** (Lõi đo đạc Telemetry, Chụp ảnh & Xử lý chính).
 
@@ -134,36 +134,37 @@ Hệ thống hỗ trợ cơ chế hoạt động **2 Lõi vật lý**: **ESP32-S
                 Heartbeat & Bật CM4 Cmd               Telemetry, Camera Config,
                             │                         S3 Upload & Live View
                             │                               │
-┌───────────────────────────┴──────────┐       ┌────────────┴─────────────────────┐
-│             ESP32-S3                 │       │        Raspberry Pi CM4          │
-│   (Always-On / Power Watchdog)       │       │    (Compute, Telemetry & Sensor) │
-├──────────────────────────────────────┤       ├──────────────────────────────────┤
-│ - Trạng thái Online/Offline trạm     │       │ - Đo Pin, Solar, Điện áp, Nguồn  │
-│ - Bật / Tắt nguồn CM4 (MOSFET/Relay) │       │ - Đo Nhiệt độ, Độ ẩm môi trường  │
-│ - Lắng nghe lệnh Bật CM4 từ Server   │       │ - Điều khiển Nikon D5300 (gphoto)│
-│ - Quản lý SIM UART khi CM4 ngắt nguồn│       │ - Presigned Upload S3 (SeaweedFS)│
-│ - Báo trạng thái CM4 Power (ON/OFF)  │       │ - Stream Live View realtime      │
-└──────────────────┬───────────────────┘       └──────────────────┬───────────────┘
-                   │                                              │
-                   │ UART (Khi CM4 OFF)               USB (Khi CM4 ON)
-                   └───────────────────┐     ┌────────────────────┘
-                                       ▼     ▼
-                                 ┌──────────────┐
-                                 │  MODULE SIM  │
-                                 │ (4G/LTE Cat4)│
-                                 └──────────────┘
+┌───────────────────────────┴──────────┐   Inter-Node UART  ┌┴─────────────────────────────────┐
+│             ESP32-S3                 │◄──────────────────►│        Raspberry Pi CM4          │
+│   (Always-On / Power Watchdog)       │ (Buffer & Relay    │    (Compute, Telemetry & Sensor) │
+├──────────────────────────────────────┤  Lệnh khi vừa boot)├──────────────────────────────────┤
+│ - Trạng thái Online/Offline trạm     │                    │ - Đo Pin, Solar, Điện áp, Nguồn  │
+│ - Bật / Tắt nguồn CM4 (MOSFET/Relay) │                    │ - Đo Nhiệt độ, Độ ẩm môi trường  │
+│ - Đệm lệnh MQTT & chuyển tiếp qua UART│                   │ - Điều khiển Nikon D5300 (gphoto)│
+│ - Quản lý SIM UART khi CM4 ngắt nguồn│                    │ - Presigned Upload S3 (SeaweedFS)│
+│ - Báo trạng thái CM4 Power (ON/OFF)  │                    │ - Stream Live View realtime      │
+└──────────────────┬───────────────────┘                    └──────────────────┬───────────────┘
+                   │                                                           │
+                   │ UART (Khi CM4 OFF)                            USB (Khi CM4 ON)
+                   └───────────────────────┐                  ┌────────────────┘
+                                           ▼                  ▼
+                                     ┌──────────────────────────────┐
+                                     │         MODULE SIM           │
+                                     │        (4G/LTE Cat4)         │
+                                     └──────────────────────────────┘
 ```
 
-### 1️⃣ Nguyên Lý Phân Chia Nhiệm Vụ 2 Lõi
+### 1️⃣ Nguyên Lý Phân Chia Nhiệm Vụ & Giao Tiếp Nội Bộ (Inter-Node UART)
 - **ESP32-S3 (Always-On Core / Power Watchdog)**:
   - Ăn nguồn cực thấp (~uA/mA). Chạy liên tục để giữ nhịp tim của trạm.
   - Trạng thái **ONLINE/OFFLINE** tổng quan của Camera trên Web Dashboard **ăn theo ESP32-S3**.
-  - Lắng nghe lệnh từ Server (`power_on_cm4`, `capture_now`, `open_config`). Bật/Tắt nguồn MOSFET cấp điện cho CM4.
+  - Lắng nghe lệnh từ Server (`power_on_cm4`, `capture_now`, `set_settings`). Bật/Tắt nguồn MOSFET cấp điện cho CM4.
+  - **Bộ Nhớ Đệm & Chuyển Tiếp Lệnh (Command Buffer & Relay)**: Khi CM4 đang `OFF`, ESP32-S3 nhận lệnh MQTT từ Server $\rightarrow$ Lưu vào đệm bộ nhớ $\rightarrow$ Bật nguồn MOSFET cấp điện cho CM4 $\rightarrow$ Ngay khi CM4 khởi động xong, ESP32-S3 **chuyển tiếp lệnh qua Inter-Node UART** cho CM4 thực thi mà **không bị mất bất kỳ lệnh nào**!
   - Sử dụng module SIM qua bus **UART** khi CM4 đang ngắt nguồn (`CM4_POWER_STATE = OFF`).
 
 - **Raspberry Pi CM4 (Compute & Telemetry Core)**:
   - **Đo đạc Pin, Solar, Điện áp, Nhiệt độ/Độ ẩm & Thông số SIM**: Các cảm biến ADC/SIM nối trực tiếp với CM4. Khi CM4 bật lên, nó đo đạc và gửi bản tin Telemetry chuẩn xác lên Server.
-  - Được cấp nguồn khi: Đến chu kỳ chụp ảnh định kỳ, khi mở Modal Config chỉnh thông số hoặc khi chạy Live View.
+  - Nhận lệnh trực tiếp từ ESP32-S3 qua **Inter-Node UART** khi vừa boot xong để thực thi ngay (chụp ảnh, lưu cấu hình...).
   - Khi CM4 bật lên, ESP32-S3 nhả bus UART để CM4 kết nối module SIM qua cổng **USB** (tốc độ cao).
   - Thực thi chụp ảnh qua `python-gphoto2`, upload ảnh S3/SeaweedFS và stream Live View.
   - Báo hoàn tất và thực hiện **Graceful Shutdown**, ESP32-S3 ngắt nguồn MOSFET và lấy lại bus UART.
@@ -175,8 +176,8 @@ Hệ thống hỗ trợ cơ chế hoạt động **2 Lõi vật lý**: **ESP32-S
 3. Khi mở Config / Chỉnh thông số:
    - Nếu CM4 đang `OFF`: Hệ thống **tự động gửi lệnh MQTT `power_on_cm4`** tới ESP32-S3.
    - Giao diện tạm thời khóa form và hiển thị `⚡ Đang kích nguồn CM4...`
-   - ESP32-S3 nhận lệnh $\rightarrow$ Bật MOSFET cấp điện cho CM4.
-   - CM4 khởi động (~10s), đo cảm biến Pin/Solar/Môi trường, đọc thông số máy ảnh Nikon D5300 và báo status `cm4_power_state = running`.
+   - ESP32-S3 nhận lệnh $\rightarrow$ Lưu đệm lệnh & bật MOSFET cấp điện cho CM4.
+   - CM4 khởi động (~10s), nhận lệnh chuyển tiếp qua UART từ ESP32-S3, đo cảm biến Pin/Solar/Môi trường, đọc thông số máy ảnh Nikon D5300 và báo status `cm4_power_state = running`.
    - Ngay khi CM4 báo `running`, giao diện tự động mở khóa toàn bộ form cho phép người dùng xem & lưu cài đặt.
 4. Khi đóng Modal Config (hoặc sau 5 phút không thao tác): CM4 báo Shutdown, ESP32-S3 ngắt nguồn MOSFET để tiết kiệm pin.
 
