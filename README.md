@@ -168,16 +168,17 @@ Hệ thống hỗ trợ cơ chế hoạt động **2 Lõi vật lý**: **ESP32-S
   - Thực thi chụp ảnh qua `python-gphoto2`, upload ảnh S3/SeaweedFS và stream Live View.
   - Báo hoàn tất và thực hiện **Graceful Shutdown**, ESP32-S3 ngắt nguồn MOSFET và lấy lại bus UART.
 
-### 2️⃣ Quy Trình Mở Modal Config & Bật Nguồn CM4 (Config Card Workflow)
-1. Trên Camera Card & Modal Config hiển thị rõ 2 trạng thái:
-   - **Trạm (ESP32-S3)**: `ONLINE` / `OFFLINE`
-   - **Lõi CM4**: `OFF (Đang ngủ)` | `POWERING_ON (Đang bật nguồn...)` | `ONLINE (Sẵn sàng)` | `SHUTTING_DOWN`
-2. Khi người dùng bấm **Chỉnh thông số** (Config Card / Modal):
-   - Nếu CM4 đang `OFF`: Hệ thống gửi lệnh MQTT `power_on_cm4` tới ESP32-S3.
-   - Nút Config hiển thị trạng thái `⚡ Đang bật nguồn CM4...`
-   - ESP32-S3 bật MOSFET cấp điện cho CM4. CM4 khởi động (~10s), đo Pin/Solar/Môi trường, đọc thông số Nikon D5300 và báo status `ONLINE`.
-   - Khi CM4 báo `ONLINE`, các ô chỉnh sửa thông số (ISO, Khẩu độ, Tốc độ, Chu kỳ, SIM) trên Modal Config sẽ hoạt động và cho phép người dùng thao tác.
-3. Khi người dùng đóng Modal Config (hoặc sau 5 phút không thao tác): CM4 báo Shutdown, ESP32-S3 ngắt nguồn MOSFET để tiết kiệm pin.
+### 2️⃣ Quy Trình Mở Modal Config & Tự Động Bật Nguồn CM4 (`power_on_cm4`)
+1. Trước khi người dùng được phép chỉnh sửa thông số (ISO, Khẩu độ, Tốc độ, Chu kỳ chụp, SIM), **CM4 BẮT BUỘC PHẢI Ở TRẠNG THÁI ONLINE**.
+2. Trên Camera Card & Modal Config hiển thị rõ trạng thái lõi CM4:
+   - `💤 OFF (Đang ngủ)` | `⚡ POWERING_ON (Đang bật nguồn...)` | `🟢 ONLINE (Sẵn sàng)` | `🔄 SHUTTING_DOWN`
+3. Khi mở Config / Chỉnh thông số:
+   - Nếu CM4 đang `OFF`: Hệ thống **tự động gửi lệnh MQTT `power_on_cm4`** tới ESP32-S3.
+   - Giao diện tạm thời khóa form và hiển thị `⚡ Đang kích nguồn CM4...`
+   - ESP32-S3 nhận lệnh $\rightarrow$ Bật MOSFET cấp điện cho CM4.
+   - CM4 khởi động (~10s), đo cảm biến Pin/Solar/Môi trường, đọc thông số máy ảnh Nikon D5300 và báo status `cm4_power_state = running`.
+   - Ngay khi CM4 báo `running`, giao diện tự động mở khóa toàn bộ form cho phép người dùng xem & lưu cài đặt.
+4. Khi đóng Modal Config (hoặc sau 5 phút không thao tác): CM4 báo Shutdown, ESP32-S3 ngắt nguồn MOSFET để tiết kiệm pin.
 
 ### 3️⃣ Dữ Liệu Lưu Trữ Phía Backend (`CameraDevice`)
 - `esp32_last_seen_at`: Thời điểm ESP32-S3 báo tín hiệu sống gần nhất (xác định trạng thái Online/Offline trạm).
