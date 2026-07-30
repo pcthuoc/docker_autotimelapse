@@ -461,8 +461,13 @@ def on_connect(client, userdata, flags, rc, props=None):
     _publish_telemetry(client)
 
 
-def _publish_telemetry(client):
+_cm4_state = {"power": "running"}
+
+def _publish_telemetry(client, node="esp32"):
     payload = {
+        "node": node,
+        "cm4_power_state": _cm4_state["power"],
+        "sim_active_node": "cm4" if _cm4_state["power"] == "running" else "esp32",
         "battery_percent":  random.randint(60, 95),
         "battery_voltage":  round(random.uniform(11.5, 12.6), 3),
         "cell_voltages":    [round(random.uniform(3.65, 3.85), 2) for _ in range(3)],
@@ -472,15 +477,14 @@ def _publish_telemetry(client):
         "temperature_c":    round(random.uniform(26, 38), 1),
         "humidity_percent": random.randint(55, 90),
         "sim_signal_dbm":   random.randint(-95, -60),
-        "firmware_version": "sim-1.0.0",
+        "firmware_version": "sim-esp32-v2.1",
     }
     client.publish(T_DATA, json.dumps(payload), qos=1)
-    log.info("→ telemetry: pin %s%%, %.1f°C", payload["battery_percent"], payload["temperature_c"])
+    log.info("→ telemetry (%s): pin %s%%, %.1f°C, cm4=%s", node, payload["battery_percent"], payload["temperature_c"], _cm4_state["power"])
 
 
 def on_message(client, userdata, msg):
-    """Nhận lệnh MQTT → đẩy vào queue để worker thread xử lý.
-    KHÔNG block paho network thread — tránh delay nhận lệnh tiếp theo."""
+    """Nhận lệnh MQTT → đẩy vào queue để worker thread xử lý."""
     try:
         raw = json.loads(msg.payload.decode())
         _cmd_queue.put((client, raw))
@@ -497,7 +501,18 @@ def _process_message(client, req):
     payload = req.get("payload") or {}
     log.info("← lệnh %s (%s)", cmd, rid)
     try:
-        if cmd == "set_settings":
+        if cmd == "power_on_cm4":
+            _cm4_state["power"] = "powering_on"
+            _publish_telemetry(client, node="esp32")
+            log.info("⚡ ESP32-S3 đệm lệnh & bật nguồn MOSFET cấp cho CM4...")
+            time.sleep(2)
+            _cm4_state["power"] = "running"
+            _publish_telemetry(client, node="cm4")
+            log.info("🟢 CM4 khởi động thành công, đo cảm biến Pin/Solar/Môi trường & sẵn sàng.")
+            resp = {"type": "power_on_cm4", "request_id": rid, "status": "ok",
+                    "data": {"cm4_power_state": "running"}}
+
+        elif cmd == "set_settings":
             applied, capabilities, mismatches = camera_backend.set_settings(payload)
             status = "ok" if not mismatches else "error"
             resp = {"type": cmd, "request_id": rid, "status": status,
