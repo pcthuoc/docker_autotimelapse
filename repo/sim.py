@@ -19,17 +19,16 @@ import gphoto2 as gp
 import paho.mqtt.client as mqtt
 from PIL import Image
 
-# ── Thông số cố định ────────────────────────────────────────────────────────
+# ── Thông số kết nối MQTT & Server ──────────────────────────────────────────
 CAMERA_CODE     = "CAM1"
 MQTT_PASSWORD   = "O3w5ZD0tXkRcORC4o2cnrg"
 MQTT_BROKER     = "localhost"
-MQTT_PORT       = 1884
+MQTT_PORT       = 1883
 
 SERVER_BASE     = "http://localhost"
-# Xác thực HTTP đơn giản: dùng lại CAMERA_CODE + MQTT_PASSWORD
-# (không cần DEVICE_KEY/SECRET riêng — không bao giờ hết hạn)
-DEVICE_KEY      = CAMERA_CODE       # = "CAM1"
-DEVICE_SECRET   = MQTT_PASSWORD     # = mqtt_password của camera trong DB
+# Xác thực HTTP API dùng CAMERA_CODE và MQTT_PASSWORD
+DEVICE_KEY      = CAMERA_CODE
+DEVICE_SECRET   = MQTT_PASSWORD
 
 TELEMETRY_SEC   = 60    # chu kỳ gửi telemetry (giây)
 CAPTURE_SEC     = 0     # chu kỳ tự động chụp + upload (giây); 0 = tắt
