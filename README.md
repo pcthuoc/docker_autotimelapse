@@ -119,3 +119,60 @@ git push -u origin master
   - `api-service`: Có quyền `Read:media`, `Write:media`, `List:media`, `Delete:media`, `Tagging:media`.
   - `admin`: Duy nhất có quyền `Admin`.
 - **Mosquitto Dynamic Security**: Trạm camera `%u` chỉ có quyền publish/subscribe trên topic riêng `camera/%u/*`.
+
+---
+
+## ⚡ 6. Kế Hoạch Kiến Trúc Phần Cứng 2 Lõi (ESP32-S3 + CM4) & Luồng Nguồn
+
+Hệ thống hỗ trợ cơ chế hoạt động **2 Lõi vật lý**: **ESP32-S3** (Watchdog/Quản lý nguồn Always-On) và **Raspberry Pi CM4** (Lõi chụp ảnh & xử lý nặng).
+
+```
+                       ┌─────────────────────────────────────────┐
+                       │              MQTT BROKER                │
+                       └────▲───────────────────────────────▲────┘
+                            │                               │
+                Telemetry / Heartbeat                   Commands / Upload
+                            │                               │
+┌───────────────────────────┴──────────┐       ┌────────────┴─────────────────────┐
+│             ESP32-S3                 │       │        Raspberry Pi CM4          │
+│   (Always-On / Power Watchdog)       │       │    (Compute & Capture Node)      │
+├──────────────────────────────────────┤       ├──────────────────────────────────┤
+│ - Quản lý nguồn CM4 (MOSFET/Relay)   │       │ - Điều khiển Nikon D5300 (gphoto)│
+│ - Đo Pin, Solar, Điện áp, Môi trường │       │ - Presigned Upload S3 (SeaweedFS)│
+│ - Trạng thái Online/Offline ăn theo  │       │ - Stream Live View realtime      │
+│ - Nhận lệnh Wake khẩn cấp từ Server  │       │ - Tự động ngắt nguồn khi xong    │
+└──────────────────┬───────────────────┘       └──────────────────┬───────────────┘
+                   │                                              │
+                   │ UART (Khi CM4 OFF)               USB (Khi CM4 ON)
+                   └───────────────────┐     ┌────────────────────┘
+                                       ▼     ▼
+                                 ┌──────────────┐
+                                 │  MODULE SIM  │
+                                 │ (4G/LTE Cat4)│
+                                 └──────────────┘
+```
+
+### 1️⃣ Nguyên Lý Hoạt Động & Trạng Thái Online/Offline
+- **ESP32-S3 (Always-On Core)**:
+  - Ăn nguồn cực thấp (~uA/mA). Chạy liên tục hoặc thức dậy ngắn.
+  - Trạng thái **ONLINE/OFFLINE** của Camera trên Web Dashboard **ăn theo ESP32-S3**.
+  - Đóng vai trò đo đạc pin, điện áp solar, nhiệt độ, độ ẩm và quản lý nguồn MOSFET cấp điện cho CM4.
+  - Sử dụng module SIM qua bus **UART** khi CM4 đang ngắt nguồn (`CM4_POWER_STATE = OFF`).
+- **Raspberry Pi CM4 (Compute Core)**:
+  - Chỉ được cấp nguồn khi tới chu kỳ chụp ảnh định kỳ, khi điều chỉnh thông số hoặc khi chạy Live View.
+  - Khi CM4 bật lên, ESP32-S3 nhả bus UART để CM4 kết nối module SIM qua cổng **USB** (tốc độ cao).
+  - Thực thi chụp ảnh qua `python-gphoto2`, upload ảnh S3/SeaweedFS và stream Live View.
+  - Báo hoàn tất và thực hiện **Graceful Shutdown**, ESP32-S3 ngắt nguồn MOSFET và lấy lại bus UART.
+
+### 2️⃣ Dữ Liệu Lưu Trữ Phía Backend (`CameraDevice`)
+- `esp32_last_seen_at`: Thời điểm ESP32-S3 báo tín hiệu sống gần nhất (xác định trạng thái Online/Offline).
+- `esp32_firmware`: Phiên bản Firmware của ESP32-S3.
+- `cm4_power_state`: Trạng thái nguồn CM4 (`off`, `powering_on`, `running`, `shutting_down`).
+- `cm4_last_seen_at`: Lần cuối CM4 thực thi nhiệm vụ chụp/upload.
+- `sim_active_node`: Nút đang giữ module SIM (`esp32` via UART / `cm4` via USB).
+
+### 3️⃣ Quy Trình Bật Nguồn Theo Yêu Cầu (Wake-on-Demand)
+- Người dùng bấm **Capture Now** trên Web $\rightarrow$ Server phát lệnh MQTT `capture_now` đến chủ đề `camera/<code/>/cmd`.
+- ESP32-S3 (đang lắng nghe) nhận lệnh $\rightarrow$ Bật nguồn MOSFET cấp điện cho CM4.
+- CM4 khởi động, nhận lệnh chụp, upload S3 rồi tự động tắt nguồn an toàn.
+
