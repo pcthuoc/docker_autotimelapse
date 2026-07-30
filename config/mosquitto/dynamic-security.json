@@ -1,5 +1,5 @@
 {
-	"changeIndex":	144,
+	"changeIndex":	146,
 	"defaultACLAccess":	{
 		"publishClientSend":	false,
 		"publishClientReceive":	true,
@@ -26,6 +26,10 @@
 			"username":	"C5ZSY4GA0P",
 			"roles":	[],
 			"encoded_password":	"$7$1000$zolk+rSXXk8GveAvzGMKfCoPkpZadvJ5Dmr25GAfwOxuoF3cGjueZH4ed4V/rFBd3u1iIvbVn9icZ80csMnE9A==$Swmqcp86o2CCNxoDfnNLDUTjO8C+w34i8PzlnsJOIbTxGxUpkvYQaCd1YNlUICA8sr1ms7cMx/Jbtr3vnjtefw=="
+		}, {
+			"username":	"CAM-YYDCYF",
+			"roles":	[],
+			"encoded_password":	"$7$1000$pSxSDKAlinFU5xy4H0hOrffaBtPK9Vub61m/n1m/N8z7Gv9BiUixTu2/wqMF4cVDGeDsI+xkTZSetbpweb5Z5A==$VOosZZi3rvaBiOz82b3sH36gJ5iR4f22i/rE8GdG29UomPl0s2O9HJ8FKV8WbUvLsRupeT/rGXfK9Zw1JhdM5g=="
 		}, {
 			"username":	"CAM1",
 			"roles":	[],
@@ -87,6 +91,10 @@
 			"roles":	[],
 			"encoded_password":	"$7$1000$u4U0Gp7KwZOevdWnNDc8+Li4g9hs3qsTm3ttznAQMuXbuiVSCukBnxLJrtVWJWvTKVKaV6Q7tW9mlpIJeD+OsA==$zyCMEcN4p/Z9Nf7VL3xpwrmCz/jrbGtowcFZHW+GsUrSp9MLM/hHjGbaWKce5bacnuCzZHF7dIR/pAzgzt1hqA=="
 		}, {
+			"username":	"TEST-8936ffa7",
+			"roles":	[],
+			"encoded_password":	"$7$1000$wwDPfXpBOuamj1P7ThEMNIAn9XAKpuHZrVNz3fI4HaAuAmWqnPYMlx9BZAyL7rfHFlQx/8xWRVstYOE1ABZEfQ==$4usEd6IZYs11ysKTiz4gQjq9jzRaM0zQQQYqC+M5WGTd/2kjXg0pUQP1WNOWuxhtRnL4dR1ng5cdSsjNzg1eOQ=="
+		}, {
 			"username":	"VIN-CAM01",
 			"roles":	[],
 			"encoded_password":	"$7$1000$PZR8lbqJ7/auHNsDqrvWcdQrGSMfKBBr819XX10obBzS/CBRuvqG3zOLY4l3YnXjNZagU4i6GYIy55RpA0HJKA==$4ZGSqf1dpbZ0TLDpdr35AtHUFAQrhNFobt/h4OyiHtt338CZnSSiNZsBSfDzXtNAFQ/Gm6G6IlVqMsgBwgg4cw=="
@@ -110,9 +118,9 @@
 			"username":	"admin",
 			"textname":	"Admin user",
 			"roles":	[{
-					"rolename":	"dynsec-admin"
-				}, {
 					"rolename":	"camera-server"
+				}, {
+					"rolename":	"dynsec-admin"
 				}, {
 					"rolename":	"super-admin"
 				}, {
@@ -120,7 +128,7 @@
 				}, {
 					"rolename":	"topic-observe"
 				}],
-			"encoded_password":	"$7$1000$otXVslYtscL01OpqLeZ5zRQLBmVGtOJXwy3J+ajldHk9lnFGRI9ag/4OIFgZ821auCYd7jI2YQZs3tVnLmfsPQ==$/ccOQAOjLJiyNk0FCm7/1dr/Vdvi7Tj4mzNoAYe44kuuxcitHh6hvZugQGYfE8ahVLB0yRC3MH5NSUip1kNZEA=="
+			"encoded_password":	"$7$1000$SRlo0HDPtiL0Ib/f3safRWE4lnQ5M0R95z3fJG2qhYUvM7QMB3lt6nDfhne/lfxwzhCV11h6aRXH4/LkRqfGeQ==$6iyUyY91l4AE3zbm81vzHd2lfx/K6hw6rN/3HHIjsDttmqOLdjhg8asnQQymjjFA4bRqKaYDNIZTOqgchDnGbw=="
 		}, {
 			"username":	"django_backend",
 			"roles":	[],
@@ -147,6 +155,8 @@
 				}, {
 					"username":	"3"
 				}, {
+					"username":	"CAM-YYDCYF"
+				}, {
 					"username":	"CAM1"
 				}, {
 					"username":	"CTC-CAM01"
@@ -156,6 +166,8 @@
 					"username":	"HB-CAM02"
 				}, {
 					"username":	"HB-CAM03"
+				}, {
+					"username":	"TEST-8936ffa7"
 				}, {
 					"username":	"VIN-CAM01"
 				}, {
