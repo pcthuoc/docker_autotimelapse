@@ -400,6 +400,17 @@ def _process_message(client, req):
             resp = {"type": "power_on_cm4", "request_id": rid, "status": "ok",
                     "data": {"cm4_power_state": "running"}}
 
+        elif cmd == "power_off_cm4":
+            _cm4_state["power"] = "shutting_down"
+            _publish_telemetry(client, node="cm4")
+            log.info("🔴 CM4 đang tiến hành tắt nguồn safe shutdown...")
+            time.sleep(1.5)
+            _cm4_state["power"] = "off"
+            _publish_telemetry(client, node="esp32")
+            log.info("💤 CM4 đã tắt hẳn nguồn. ESP32-S3 khôi phục chu kỳ quản lý tự động.")
+            resp = {"type": "power_off_cm4", "request_id": rid, "status": "ok",
+                    "data": {"cm4_power_state": "off"}}
+
         elif cmd == "set_settings":
             if _cm4_state["power"] != "running":
                 log.info("⚡ ESP32-S3 đệm lệnh set_settings & bật CM4...")
