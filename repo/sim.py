@@ -20,8 +20,8 @@ import paho.mqtt.client as mqtt
 from PIL import Image
 
 # ── Thông số kết nối MQTT & Server ──────────────────────────────────────────
-CAMERA_CODE     = "CAM1"
-MQTT_PASSWORD   = "O3w5ZD0tXkRcORC4o2cnrg"
+CAMERA_CODE     = "CAM-F53RQV"
+MQTT_PASSWORD   = "8_2Vhy43gl6GcPvMuDu3eQ"
 MQTT_BROKER     = "localhost"
 MQTT_PORT       = 1883
 
