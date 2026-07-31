@@ -24,7 +24,7 @@ except ImportError:
     pass
 
 # Site Domain & Base Configs
-SITE_DOMAIN = os.environ.get("SITE_DOMAIN", "cloud.congnghetimelapse.com").strip()
+SITE_DOMAIN = os.environ.get("SITE_DOMAIN", "localhost").strip()
 SITE_SCHEME = os.environ.get("SITE_SCHEME", "http").strip()
 SITE_NAME = os.environ.get("SITE_NAME", "AutoTimelapse Cloud").strip()
 
@@ -32,13 +32,14 @@ SITE_NAME = os.environ.get("SITE_NAME", "AutoTimelapse Cloud").strip()
 SECRET_KEY = os.environ.get("SECRET_KEY", "django-insecure-u_am=8by79nhqo9p@msu21tm5v_nwlrvau@d3(z)qx-fog_%a!")
 DEBUG = os.environ.get("DEBUG", "0") == "1"
 
-_allowed_hosts_env = os.environ.get("ALLOWED_HOSTS", f"{SITE_DOMAIN},localhost,127.0.0.1,site").strip()
-if _allowed_hosts_env == "*":
+_allowed_hosts_env = os.environ.get("ALLOWED_HOSTS", "*").strip()
+_hosts_list = [h.strip() for h in _allowed_hosts_env.split(",") if h.strip()]
+if "*" in _hosts_list:
     ALLOWED_HOSTS = ["*"]
 else:
-    ALLOWED_HOSTS = [h.strip() for h in _allowed_hosts_env.split(",") if h.strip()]
+    ALLOWED_HOSTS = _hosts_list
 
-_csrf_origins_env = os.environ.get("CSRF_TRUSTED_ORIGINS", f"{SITE_SCHEME}://{SITE_DOMAIN},https://{SITE_DOMAIN},http://{SITE_DOMAIN}").strip()
+_csrf_origins_env = os.environ.get("CSRF_TRUSTED_ORIGINS", f"{SITE_SCHEME}://{SITE_DOMAIN},http://localhost,http://127.0.0.1").strip()
 CSRF_TRUSTED_ORIGINS = list(dict.fromkeys([o.strip() for o in _csrf_origins_env.split(",") if o.strip()]))
 
 # Database Configuration
