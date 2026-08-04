@@ -152,6 +152,9 @@ class HybridCameraBackend:
             self.use_real_hardware = False
 
     def get_settings(self):
+        if GPHOTO2_AVAILABLE and not self.use_real_hardware:
+            self._try_init_real_camera()
+
         if self.use_real_hardware:
             with self._lock:
                 try:
@@ -222,6 +225,9 @@ class HybridCameraBackend:
 
     def capture(self, camera_code="CAM-WIFI"):
         """Chụp ảnh từ máy ảnh thật (gphoto2) hoặc sinh ảnh giả lập bằng PIL."""
+        if GPHOTO2_AVAILABLE and not self.use_real_hardware:
+            self._try_init_real_camera()
+
         if self.use_real_hardware:
             with self._lock:
                 try:
@@ -289,6 +295,9 @@ class HybridCameraBackend:
 
     def preview(self):
         """Lấy frame preview cho Live View."""
+        if GPHOTO2_AVAILABLE and not self.use_real_hardware:
+            self._try_init_real_camera()
+
         if self.use_real_hardware:
             with self._lock:
                 try:
