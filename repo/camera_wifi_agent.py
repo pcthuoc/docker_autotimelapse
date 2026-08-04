@@ -368,7 +368,8 @@ class CameraAgent:
         self.t_data = f"camera/{self.code}/data"
         self.t_status = f"camera/{self.code}/status"
 
-    def _http_post_json(self, path, obj):
+    def _http_post_json(self, path, obj, *, _max_retries=3, _retry_delay=2):
+        """POST JSON và trả (status, dict). Tự động retry khi gặp 502/503/504."""
         body = json.dumps(obj).encode()
         req = urllib.request.Request(
             self.server_base + path, data=body, method="POST",
@@ -378,8 +379,33 @@ class CameraAgent:
                 "X-Device-Secret": self.password,
             },
         )
-        with urllib.request.urlopen(req, timeout=15) as r:
-            return r.status, json.loads(r.read().decode() or "{}")
+        last_exc = None
+        for attempt in range(1, _max_retries + 2):  # 1 lần gốc + max_retries lần retry
+            try:
+                with urllib.request.urlopen(req, timeout=15) as r:
+                    return r.status, json.loads(r.read().decode() or "{}")
+            except urllib.error.HTTPError as exc:
+                # Chỉ retry với lỗi tạm thời của server/gateway
+                if exc.code in (502, 503, 504) and attempt <= _max_retries:
+                    wait = _retry_delay * (2 ** (attempt - 1))  # 2s, 4s, 8s
+                    log.warning("[Retry %d/%d] HTTP %d trên %s, thử lại sau %ds...",
+                                attempt, _max_retries, exc.code, path, wait)
+                    time.sleep(wait)
+                    last_exc = exc
+                else:
+                    raise
+            except (OSError, TimeoutError) as exc:
+                # Network timeout/reset — cũng đáng retry
+                if attempt <= _max_retries:
+                    wait = _retry_delay * (2 ** (attempt - 1))
+                    log.warning("[Retry %d/%d] Network error trên %s: %s, thử sau %ds...",
+                                attempt, _max_retries, path, exc, wait)
+                    time.sleep(wait)
+                    last_exc = exc
+                else:
+                    raise
+        raise last_exc  # hết retry vẫn lỗi → báo lên
+
 
     def _http_post_frame(self, session_id, seq, frame_bytes):
         req = urllib.request.Request(
