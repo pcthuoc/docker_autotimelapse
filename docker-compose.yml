@@ -86,7 +86,29 @@ services:
     image: atl-site:latest
     init: true
     restart: unless-stopped
-    command: celery -A autotimelapse worker -l info -c 2
+    # Q default,archive: nén ZIP và các task nẹ — concurrency=4 để xử lý song song
+    command: celery -A autotimelapse worker -l info -Q default,archive -c 4
+    volumes:
+      - ./repo/backend:/app
+    working_dir: /app
+    env_file:
+      - ./environment/site.env
+    environment:
+      DJANGO_SETTINGS_MODULE: autotimelapse.settings
+    networks: [app-net, seaweed-net]
+    depends_on: [postgres, redis, site]
+
+  celery_render:
+    container_name: atl-celery-render
+    build:
+      context: .
+      dockerfile: ./site/Dockerfile
+    image: atl-site:latest
+    init: true
+    restart: unless-stopped
+    # Q render: chỉ dành cho ffmpeg encode — concurrency=1 để không ngốn hết CPU
+    # max-tasks-per-child=2: giải phóng bộ nhớ sau mỗi 2 render job
+    command: celery -A autotimelapse worker -l info -Q render -c 1 --max-tasks-per-child=2
     volumes:
       - ./repo/backend:/app
     working_dir: /app
