@@ -131,9 +131,9 @@ services:
         -volumeSizeLimitMB=1024
         -metricsPort=9324
     ports:
-      - "9333:9333"    # HTTP API + UI
-      - "19333:19333"  # gRPC
-      - "9324:9324"    # Prometheus metrics
+      - "127.0.0.1:9333:9333"    # HTTP API + UI (Nội bộ / Localhost)
+      - "127.0.0.1:19333:19333"  # gRPC (Nội bộ / Localhost)
+      - "127.0.0.1:9324:9324"    # Prometheus metrics (Nội bộ / Localhost)
     volumes:
       - ./data/seaweed/master:/data
     networks:
@@ -162,9 +162,9 @@ services:
         -max=50
         -metricsPort=9325
     ports:
-      - "8080:8080"    # HTTP API
-      - "18080:18080"  # gRPC
-      - "9325:9325"    # Prometheus metrics
+      - "127.0.0.1:8080:8080"    # HTTP API (Nội bộ / Localhost)
+      - "127.0.0.1:18080:18080"  # gRPC (Nội bộ / Localhost)
+      - "127.0.0.1:9325:9325"    # Prometheus metrics (Nội bộ / Localhost)
     volumes:
       - ./data/seaweed/volume:/data
     networks:
@@ -189,10 +189,10 @@ services:
         -s3.port=8333
         -s3.config=/config/s3.json
     ports:
-      - "8888:8888"    # Filer HTTP
-      - "18888:18888"  # Filer gRPC
-      - "8333:8333"    # S3 gateway
-      - "9326:9326"    # Prometheus metrics
+      - "127.0.0.1:8888:8888"    # Filer HTTP (Chặn bypass upload ngoài)
+      - "127.0.0.1:18888:18888"  # Filer gRPC (Nội bộ / Localhost)
+      - "8333:8333"              # S3 gateway PUBLIC (ĐÃ BẢO VỆ BẰNG S3 AUTH & PRESIGNED URL)
+      - "127.0.0.1:9326:9326"    # Prometheus metrics (Nội bộ / Localhost)
     tty: true
     stdin_open: true
     volumes:
@@ -213,7 +213,7 @@ services:
     env_file:
       - ./environment/site.env
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - ./data/postgres:/var/lib/postgresql/data
     networks:
