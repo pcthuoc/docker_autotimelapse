@@ -27,10 +27,10 @@ services:
     image: atl-site:latest
     init: true
     restart: unless-stopped
-    command: >
+    command: >-
       sh -c "python manage.py migrate &&
              python manage.py collectstatic --noinput &&
-             python manage.py runserver 0.0.0.0:8000"
+             gunicorn autotimelapse.wsgi:application --bind 0.0.0.0:8000 --workers 4 --threads 2 --timeout 120 --keep-alive 5 --access-logfile - --error-logfile -"
     volumes:
       - ./repo/backend:/app
       - static_data:/app/staticfiles
