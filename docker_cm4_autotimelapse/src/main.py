@@ -269,12 +269,16 @@ class CameraAgent:
             payload["threads"] = self.watchdog.status_report()
 
             self.mqtt_client.publish(self.t_data, json.dumps(payload), qos=1)
-            log.info("📡 Telemetry [CM4]: %.1f°C CPU%.0f%% RAM%.0f%% Signal:%ddBm[%s] CamPwr:%s Mode:%s",
-                     payload["temperature_c"], payload["cpu_percent"],
-                     payload["memory_percent"], payload["sim_signal_dbm"],
-                     payload["sim_source"],
-                     payload["camera_gpio_power"],
-                     payload["camera_hw_mode"])
+            hum_str = f" Hum:{payload['humidity_percent']}%" if payload.get("humidity_percent") is not None else ""
+            bat_str = f" Bat:{payload['battery_voltage']}V({payload.get('battery_percent', 0)}%)" if payload.get("battery_voltage") is not None else ""
+            sol_str = f" Sol:{payload['solar_voltage']}V" if payload.get("solar_voltage") is not None else ""
+            chg_str = "⚡" if payload.get("is_charging") else ""
+
+            log.info("📡 Telemetry [CM4]: %.1f°C%s CPU%.0f%% RAM%.0f%%%s%s%s Signal:%ddBm[%s] CamPwr:%s Mode:%s",
+                     payload["temperature_c"], hum_str, payload["cpu_percent"],
+                     payload["memory_percent"], bat_str, sol_str, chg_str,
+                     payload["sim_signal_dbm"], payload["sim_source"],
+                     payload["camera_gpio_power"], payload["camera_hw_mode"])
         except Exception as e:
             log.warning("Lỗi publish Telemetry: %s", e)
 
