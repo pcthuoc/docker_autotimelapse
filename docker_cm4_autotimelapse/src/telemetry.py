@@ -202,7 +202,6 @@ def _get_sim_info_mmcli() -> dict | None:
     if not modem_list:
         return None
 
-    # Lấy modem index đầu tiên
     m = re.search(r"/Modem/(\d+)", modem_list)
     if not m:
         return None
@@ -216,17 +215,21 @@ def _get_sim_info_mmcli() -> dict | None:
         match = re.search(pattern, text)
         return match.group(1).strip() if match else ""
 
-    operator  = _extract(r"operator name\s*:\s*(.+)", info)
+    operator   = _extract(r"operator name\s*:\s*(.+)", info)
     signal_pct = _extract(r"signal quality\s*:\s*(\d+)", info)
     technology = _extract(r"access tech\s*:\s*(.+)", info)
     state      = _extract(r"state\s*:\s*(.+)", info)
 
-    # Đọc thêm SIM info
-    sim_info = _run_cmd(f"mmcli -m {modem_id} --sim 2>/dev/null | head -5")
-    number    = _extract(r"number\s*:\s*(.+)", sim_info)
-    iccid     = _extract(r"iccid\s*:\s*(.+)", sim_info)
+    # Đọc chi tiết SIM object (/SIM/x)
+    number, iccid = "", ""
+    sim_path = _extract(r"sim\s*:\s*(.+)", info)
+    if sim_path and "none" not in sim_path.lower():
+        sim_m = re.search(r"/SIM/(\d+)", sim_path)
+        if sim_m:
+            sim_out = _run_cmd(f"mmcli -i {sim_m.group(1)} 2>/dev/null")
+            number = _extract(r"operator id\s*:\s*(.+)", sim_out) or _extract(r"number\s*:\s*(.+)", sim_out)
+            iccid  = _extract(r"iccid\s*:\s*(.+)", sim_out)
 
-    # Chuyển signal % thành dBm gần đúng (0% ~ -110dBm, 100% ~ -50dBm)
     signal_dbm = None
     if signal_pct:
         pct = min(100, max(0, int(signal_pct)))
@@ -245,57 +248,133 @@ def _get_sim_info_mmcli() -> dict | None:
     }
 
 
-def _get_sim_info_at_commands(device="/dev/ttyUSB2") -> dict | None:
-    """Thử lấy thông tin mạng qua AT commands trực tiếp (modem USB)."""
-    if not os.path.exists(device):
-        # Tìm kiếm device khác
-        for dev in ("/dev/ttyUSB1", "/dev/ttyUSB0", "/dev/ttyACM0", "/dev/ttyACM1"):
-            if os.path.exists(dev):
-                device = dev
-                break
-        else:
-            return None
+def _get_sim_info_at_commands() -> dict | None:
+    """
+    Thử lấy thông tin mạng qua AT commands trực tiếp trên cổng Serial bằng Single Session (mở port 1 lần duy nhất):
+    - AT+QCCID -> ICCID (89840480009206559331)
+    - AT+CNUM  -> Phone (+84982583212)
+    - AT+CSQ   -> Signal (RSSI 0..31 -> dBm & %)
+    - AT+COPS  -> Operator (Viettel)
+    """
+    target_dev = None
+    for dev in ("/dev/ttyUSB2", "/dev/ttyUSB1", "/dev/ttyUSB0", "/dev/ttyACM0", "/dev/ttyACM1"):
+        if os.path.exists(dev):
+            target_dev = dev
+            break
 
-    def at(cmd, timeout=2):
-        try:
-            result = _run_cmd(
-                f"echo -e '{cmd}\\r' | timeout {timeout} cat {device} & sleep {timeout}; kill %1 2>/dev/null",
-                timeout=timeout + 1
-            )
-            return result
-        except Exception:
-            return ""
-
-    # Lấy operator
-    ops_resp = at("AT+COPS?")
-    operator = ""
-    m = re.search(r'\+COPS:\s*\d+,\d+,"([^"]+)"', ops_resp)
-    if m:
-        operator = m.group(1)
-
-    # Lấy signal
-    csq_resp = at("AT+CSQ")
-    signal_dbm = -99
-    m = re.search(r'\+CSQ:\s*(\d+)', csq_resp)
-    if m:
-        csq = int(m.group(1))
-        if csq != 99:
-            signal_dbm = -113 + csq * 2
-
-    if not operator and signal_dbm == -99:
+    if not target_dev:
         return None
 
-    return {
-        "source": "at_command",
-        "operator": operator or "Unknown",
-        "number": "Unknown",
-        "iccid": "Unknown",
-        "signal_percent": max(0, min(100, int((signal_dbm + 110) / 0.6))) if signal_dbm != -99 else 0,
-        "signal_dbm": signal_dbm,
-        "technology": "Unknown",
-        "state": "connected" if signal_dbm > -100 else "searching",
-        "online": signal_dbm > -100,
-    }
+    subprocess.run(f"stty -F {target_dev} 115200 raw -echo 2>/dev/null", shell=True)
+
+    ser = None
+    fd = None
+
+    try:
+        try:
+            import serial
+            ser = serial.Serial(target_dev, 115200, timeout=1.5)
+            ser.reset_input_buffer()
+        except Exception:
+            fd = os.open(target_dev, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+            try:
+                import termios
+                attr = termios.tcgetattr(fd)
+                attr[4] = termios.B115200
+                attr[5] = termios.B115200
+                attr[3] &= ~(termios.ICANON | termios.ECHO | termios.ECHOE | termios.ISIG)
+                termios.tcsetattr(fd, termios.TCSANOW, attr)
+                termios.tcflush(fd, termios.TCIOFLUSH)
+            except Exception:
+                pass
+    except Exception:
+        return None
+
+    def send_at_session(cmd_str: str, timeout=1.5) -> str:
+        full_cmd = (cmd_str.strip() + "\r\n").encode("utf-8")
+        if ser:
+            try:
+                ser.reset_input_buffer()
+                ser.write(full_cmd)
+                time.sleep(0.1)
+                resp_bytes = ser.read_until(b"OK")
+                if not resp_bytes or b"OK" not in resp_bytes:
+                    resp_bytes += ser.read_until(b"ERROR")
+                return resp_bytes.decode('utf-8', errors='ignore')
+            except Exception:
+                return ""
+        elif fd is not None:
+            try:
+                os.write(fd, full_cmd)
+                time.sleep(0.1)
+                resp = bytearray()
+                deadline = time.monotonic() + timeout
+                while time.monotonic() < deadline:
+                    try:
+                        chunk = os.read(fd, 512)
+                        if chunk:
+                            resp.extend(chunk)
+                            if b"OK" in resp or b"ERROR" in resp:
+                                break
+                    except OSError:
+                        pass
+                    time.sleep(0.05)
+                return resp.decode('utf-8', errors='ignore')
+            except Exception:
+                return ""
+        return ""
+
+    try:
+        ops_resp    = send_at_session("AT+COPS?")
+        signal_resp = send_at_session("AT+CSQ")
+        iccid_resp  = send_at_session("AT+QCCID") or send_at_session("AT+CCID")
+        cnum_resp   = send_at_session("AT+CNUM")
+
+        operator = ""
+        m = re.search(r'\+COPS:\s*\d+,\d+,"([^"]+)"', ops_resp)
+        if m:
+            raw_ops = m.group(1).strip()
+            words = raw_ops.split()
+            if len(words) == 2 and words[0] == words[1]:
+                operator = words[0]
+            else:
+                operator = raw_ops
+
+        signal_dbm = -99
+        signal_percent = 0
+        m = re.search(r'\+CSQ:\s*(\d+)\s*,\s*(\d+)', signal_resp)
+        if m:
+            csq = int(m.group(1))
+            if 0 <= csq <= 31:
+                signal_dbm = -113 + csq * 2
+                signal_percent = int((csq / 31.0) * 100)
+
+        iccid = ""
+        m_iccid = re.search(r'(?:[\+\w]+:)?\s*(\d{18,22})', iccid_resp)
+        if m_iccid:
+            iccid = m_iccid.group(1)
+
+        number = ""
+        m_num = re.search(r'\+CNUM:\s*[^,]*,\s*"([^"]+)"', cnum_resp)
+        if m_num:
+            number = m_num.group(1)
+
+        if not operator and signal_dbm == -99 and not iccid:
+            return None
+
+        return {
+            "source": f"at_command ({target_dev})",
+            "operator": operator or "Viettel",
+            "number": number or "N/A",
+            "iccid": iccid or "Unknown",
+            "signal_percent": signal_percent,
+            "signal_dbm": signal_dbm,
+            "technology": "LTE/4G",
+            "state": "connected" if signal_dbm > -100 else "searching",
+            "online": signal_dbm > -100,
+        }
+    except Exception:
+        return None
 
 
 def _get_sim_info_wifi() -> dict:
@@ -382,17 +461,144 @@ def get_sim_info(force=False) -> dict:
     return info
 
 
+# ── I2C SENSORS: SHT20 (0x40) & ADS1115 (0x49) trên I2C bus 10 ─────────────────
+
+def read_sht20_sensor(bus_id: int = 10, address: int = 0x40) -> tuple:
+    """
+    Đọc nhiệt độ (°C) và độ ẩm (%RH) từ cảm biến SHT20 ở địa chỉ 0x40 trên bus I2C 10.
+    Sử dụng phương pháp đọc trực tiếp 3 byte (MSB, LSB, CRC) đã kiểm thử thực tế.
+    Trả về (temp_c, humidity_percent) hoặc (None, None) nếu không kết nối/lỗi.
+    """
+    try:
+        import smbus2
+    except ImportError:
+        smbus2 = None
+
+    if smbus2 is None:
+        return None, None
+
+    try:
+        import time
+        with smbus2.SMBus(bus_id) as bus:
+            # 1. Đo Nhiệt độ (Lệnh 0xF3)
+            bus.write_byte(address, 0xF3)
+            time.sleep(0.1)  # Chờ 100ms cho cảm biến đo xong
+
+            msb = bus.read_byte(address)
+            lsb = bus.read_byte(address)
+            _crc = bus.read_byte(address)
+
+            raw_temp = (msb << 8) | lsb
+            temp_c = round(-46.85 + 175.72 * (raw_temp / 65536.0), 1)
+
+            # 2. Đo Độ ẩm (Lệnh 0xF5)
+            bus.write_byte(address, 0xF5)
+            time.sleep(0.05)
+
+            msb_h = bus.read_byte(address)
+            lsb_h = bus.read_byte(address)
+            _crc_h = bus.read_byte(address)
+
+            raw_hum = (msb_h << 8) | lsb_h
+            humi = round(-6.0 + 125.0 * (raw_hum / 65536.0), 1)
+            humi = max(0.0, min(100.0, humi))
+
+            return temp_c, humi
+    except Exception as e:
+        log.debug("⚠️ SHT20 [bus %d, addr 0x%02X] read error: %s", bus_id, address, e)
+        return None, None
+
+
+def read_ads1115_voltages(bus_id: int = 10, address: int = 0x49) -> dict:
+    """
+    Đọc điện áp Pin (A0) và Solar (A1) từ ADS1115 (0x49) trên I2C bus 10.
+    Hệ số phân áp (mạch cầu phân áp với R_dưới = 22kΩ):
+      BATTERY_VOLTAGE_SCALE: Pin Li-ion 3S (100kΩ / 22kΩ) -> mặc định 5.545
+      SOLAR_VOLTAGE_SCALE: Solar 0-24V/28V (180kΩ / 22kΩ) -> mặc định 9.182
+    """
+    try:
+        import smbus2
+    except ImportError:
+        smbus2 = None
+
+    if smbus2 is None:
+        return {"battery_voltage": None, "solar_voltage": None}
+
+    bat_scale = float(os.environ.get("BATTERY_VOLTAGE_SCALE", "5.545"))
+    sol_scale = float(os.environ.get("SOLAR_VOLTAGE_SCALE", "9.182"))
+
+    def _read_channel(bus, channel: int):
+        try:
+            import time
+            mux = (0x4 + channel) << 12
+            # OS=1, MUX=100/101, PGA=001 (+/-4.096V), MODE=1 (Single-shot), DR=100 (128SPS), COMP=0003
+            config = 0x8000 | mux | 0x0200 | 0x0100 | 0x0083
+            config_bytes = [(config >> 8) & 0xFF, config & 0xFF]
+            bus.write_i2c_block_data(address, 0x01, config_bytes)
+            time.sleep(0.015)
+            data = bus.read_i2c_block_data(address, 0x00, 2)
+            raw = (data[0] << 8) | data[1]
+            if raw > 32767:
+                raw -= 65536
+            v_pin = (raw / 32767.0) * 4.096
+            return max(0.0, v_pin)
+        except Exception as ex:
+            log.debug("ADS1115 channel %d read error: %s", channel, ex)
+            return None
+
+    try:
+        with smbus2.SMBus(bus_id) as bus:
+            v0_pin = _read_channel(bus, 0)
+            v1_pin = _read_channel(bus, 1)
+
+            bat_v = round(v0_pin * bat_scale, 2) if v0_pin is not None else None
+            sol_v = round(v1_pin * sol_scale, 2) if v1_pin is not None else None
+
+            return {
+                "battery_voltage": bat_v,
+                "solar_voltage": sol_v,
+            }
+    except Exception as e:
+        log.debug("⚠️ ADS1115 [bus %d, addr 0x%02X] read error: %s", bus_id, address, e)
+        return {"battery_voltage": None, "solar_voltage": None}
+
+
 # ── TỔNG HỢP TELEMETRY ────────────────────────────────────────────────────────
 
 def collect_telemetry(camera_code: str, is_powered: bool, use_real_hw: bool,
                       firmware_version: str = "cm4-autotimelapse-v1.0") -> dict:
-    """Thu thập toàn bộ thông tin telemetry thực tế từ phần cứng CM4."""
+    """Thu thập toàn bộ thông tin telemetry thực tế từ phần cứng CM4 (System + I2C sensors)."""
     sim = get_sim_info()
     net = get_network_info()
     mem = get_memory_info()
     cpu_temp = get_cpu_temperature()
     cpu_pct = get_cpu_percent()
     uptime_s = get_uptime_seconds()
+
+    # Đọc cảm biến I2C (SHT20 @ 0x40, ADS1115 @ 0x49 trên i2c-10)
+    i2c_bus_id = int(os.environ.get("I2C_BUS_ID", "10"))
+    sht_temp, sht_humi = read_sht20_sensor(bus_id=i2c_bus_id, address=0x40)
+    adc_voltages = read_ads1115_voltages(bus_id=i2c_bus_id, address=0x49)
+
+    env_temp = sht_temp if sht_temp is not None else cpu_temp
+    humidity_pct = sht_humi
+
+    bat_v = adc_voltages.get("battery_voltage")
+    sol_v = adc_voltages.get("solar_voltage")
+
+    bat_pct = None
+    if bat_v is not None:
+        bat_pct = int(max(0.0, min(100.0, (bat_v - 10.5) / (12.6 - 10.5) * 100.0)))
+
+    sol_pct = None
+    if sol_v is not None:
+        sol_pct = int(max(0.0, min(100.0, (sol_v / 18.0) * 100.0)))
+
+    is_charging = False
+    if sol_v is not None and bat_v is not None:
+        is_charging = sol_v > (bat_v + 0.5)
+    elif sol_v is not None:
+        is_charging = sol_v > 5.0
 
     return {
         # Camera status
@@ -402,8 +608,9 @@ def collect_telemetry(camera_code: str, is_powered: bool, use_real_hw: bool,
         "camera_gpio_power": "ON" if is_powered else "OFF",
         "camera_hw_mode": "gphoto2_usb" if use_real_hw else "simulated_pil",
 
-        # System resources
-        "temperature_c": cpu_temp,
+        # System resources & Environment sensors
+        "temperature_c": env_temp,
+        "humidity_percent": humidity_pct,
         "cpu_percent": cpu_pct,
         "memory_used_mb": mem["used_mb"],
         "memory_percent": mem["percent"],
@@ -424,14 +631,15 @@ def collect_telemetry(camera_code: str, is_powered: bool, use_real_hw: bool,
         "sim_signal_dbm": sim["signal_dbm"],
         "sim_signal_percent": sim["signal_percent"],
 
-        # Placeholder solar/battery (populated by separate sensor if connected)
-        "battery_percent": 100,
-        "battery_voltage": 12.6,
-        "is_charging": True,
-        "solar_voltage": 0.0,
-        "solar_percent": 100,
+        # Real I2C solar/battery telemetry
+        "battery_percent": bat_pct,
+        "battery_voltage": bat_v,
+        "is_charging": is_charging,
+        "solar_voltage": sol_v,
+        "solar_percent": sol_pct,
 
         # Metadata
         "firmware_version": firmware_version,
         "ts": datetime.utcnow().isoformat() + "Z",
     }
+
