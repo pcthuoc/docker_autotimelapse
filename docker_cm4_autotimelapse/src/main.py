@@ -455,7 +455,7 @@ class CameraAgent:
         def on_disconnect(client, userdata, flags, rc, props=None):
             log.warning("⚠️ MQTT mất kết nối (rc=%s). Paho sẽ tự reconnect...", rc)
 
-        client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=self.code)
+        client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=f"{self.code}_agent")
         client.username_pw_set(self.code, self.password)
         client.will_set(self.t_status, json.dumps({"online": False}), qos=1, retain=True)
         client.reconnect_delay_set(min_delay=2, max_delay=30)
