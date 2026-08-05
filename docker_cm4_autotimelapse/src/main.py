@@ -2,15 +2,19 @@
 """
 AutoTimelapse CM4 Camera Agent - Main Orchestrator
 ------------------------------------------------------------------
-Luồng xử lý chính kết hợp MQTT, Điều khiển nguồn GPIO, Quản lý USB Máy ảnh
-và Hàng đợi Upload Offline.
+Luồng xử lý chính kết hợp:
+  - MQTT (auto-reconnect, QoS)
+  - Điều khiển nguồn GPIO 16
+  - Quản lý USB Máy ảnh (gphoto2 + USB reset + hard power cycle)
+  - Hàng đợi Upload Offline (3x retry → local disk → auto retry)
+  - Telemetry thật (SIM/modem/WiFi, CPU temp, RAM, Network)
+  - Watchdog giám sát & tự động khởi động lại mọi thread bị crash
 """
 
 import sys
 import io
 import json
 import time
-import random
 import logging
 import argparse
 import signal
@@ -31,6 +35,8 @@ from config import (
 from power_manager import CameraPowerManager
 from offline_queue import OfflineQueueManager
 from camera_backend import HybridCameraBackend
+from telemetry import collect_telemetry, get_sim_info
+from watchdog import ThreadWatchdog, ManagedThread
 
 try:
     import paho.mqtt.client as mqtt
@@ -44,6 +50,8 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 log = logging.getLogger("cm4_main_agent")
+
+FIRMWARE_VERSION = "cm4-autotimelapse-v2.0"
 
 
 class CameraAgent:
@@ -62,14 +70,16 @@ class CameraAgent:
         self.telemetry_interval = telemetry_interval
         self.offline_retry_interval = offline_retry_interval
 
+        # Power Manager (GPIO 16)
         self.power_manager = CameraPowerManager(
-            pin=power_pin,
-            active_high=power_active_high,
-            warmup_delay=warmup_delay
+            pin=power_pin, active_high=power_active_high, warmup_delay=warmup_delay
         )
-
+        # Offline Queue
         self.offline_queue = OfflineQueueManager(queue_dir=offline_dir)
+        # Camera Backend
         self.backend = HybridCameraBackend(self.power_manager)
+        # Watchdog
+        self.watchdog = ThreadWatchdog()
 
         self.running = False
         self.capture_interval_sec = 0
@@ -79,10 +89,13 @@ class CameraAgent:
         self.cmd_queue = _queue.SimpleQueue()
         self.mqtt_client = None
 
-        self.t_cmd = f"camera/{self.code}/cmd"
-        self.t_ack = f"camera/{self.code}/ack"
-        self.t_data = f"camera/{self.code}/data"
+        # MQTT Topics
+        self.t_cmd    = f"camera/{self.code}/cmd"
+        self.t_ack    = f"camera/{self.code}/ack"
+        self.t_data   = f"camera/{self.code}/data"
         self.t_status = f"camera/{self.code}/status"
+
+    # ── HTTP Helpers ──────────────────────────────────────────────────────────
 
     def _http_post_json(self, path, obj):
         body = json.dumps(obj).encode()
@@ -113,32 +126,32 @@ class CameraAgent:
             return r.status, json.loads(r.read().decode() or "{}")
 
     def _http_put(self, url, data, content_type):
-        req = urllib.request.Request(url, data=data, method="PUT", headers={"Content-Type": content_type})
+        req = urllib.request.Request(url, data=data, method="PUT",
+                                     headers={"Content-Type": content_type})
         with urllib.request.urlopen(req, timeout=30) as r:
             return r.status
 
+    # ── Upload ────────────────────────────────────────────────────────────────
+
     def _do_upload_to_server(self, final_bytes, thumb_bytes, metadata):
-        """Thực hiện trực tiếp các bước Upload S3 Presigned URL & Complete API."""
+        """Upload S3 Presigned URL workflow (Presign → PUT → Complete)."""
         try:
             content_type = metadata.get("content_type", "image/jpeg")
             taken_at = metadata.get("taken_at") or datetime.now(timezone.utc).isoformat()
 
-            # Step 1: Xin Presigned URL
             st, pre = self._http_post_json("/api/device/upload/presign/", {
                 "content_type": content_type,
                 "taken_at": taken_at,
                 "with_thumb": thumb_bytes is not None,
             })
             if st != 200:
-                log.error("Lỗi xin Presigned URL từ server: status=%s resp=%s", st, pre)
+                log.error("Lỗi xin Presigned URL: status=%s resp=%s", st, pre)
                 return False, None
 
-            # Step 2: Upload file ảnh & thumbnail lên S3 / SeaweedFS
             self._http_put(pre["url"], final_bytes, content_type)
-            if thumb_bytes is not None and "thumb_url" in pre:
+            if thumb_bytes and "thumb_url" in pre:
                 self._http_put(pre["thumb_url"], thumb_bytes, "image/jpeg")
 
-            # Step 3: Hoàn tất đăng ký dữ liệu ảnh
             st, done = self._http_post_json("/api/device/upload/complete/", {
                 "media_id": pre["media_id"],
                 "key": pre["key"],
@@ -153,16 +166,16 @@ class CameraAgent:
 
             if st == 200 and done.get("ok"):
                 return True, done["media_id"]
-            else:
-                log.error("Lỗi Complete Upload từ server: status=%s resp=%s", st, done)
-                return False, None
+            log.error("Lỗi Complete Upload: status=%s resp=%s", st, done)
+            return False, None
         except Exception as exc:
-            log.warning("Upload lên Server thất bại: %s", exc)
+            log.warning("Upload thất bại: %s", exc)
             return False, None
 
     def upload_capture(self):
-        """Thực hiện chu trình chụp ảnh: GPIO ON -> Chụp -> Upload (Thử lại 3 lần) -> Offline Queue -> Power Management."""
-        # 1. Bật nguồn máy ảnh
+        """Thực hiện chu trình chụp đầy đủ:
+        GPIO ON → Capture → Retry 3x upload → Offline Queue → Power Management.
+        """
         self.power_manager.power_on()
 
         taken_at = datetime.now(timezone.utc).isoformat()
@@ -175,11 +188,11 @@ class CameraAgent:
             if thumb is None:
                 try:
                     with Image.open(io.BytesIO(final_bytes)) as im:
-                        thumb_im = im.copy()
-                        thumb_im.thumbnail((480, 320))
-                        output = io.BytesIO()
-                        thumb_im.save(output, "JPEG", quality=82)
-                        thumb = output.getvalue()
+                        t = im.copy()
+                        t.thumbnail((480, 320))
+                        buf = io.BytesIO()
+                        t.save(buf, "JPEG", quality=82)
+                        thumb = buf.getvalue()
                 except Exception as e:
                     log.warning("Lỗi sinh thumbnail: %s", e)
 
@@ -192,27 +205,26 @@ class CameraAgent:
                 "camera_code": self.code,
             }
 
-            # Thử upload tối đa MAX_UPLOAD_RETRIES (3 lần) trước khi đưa vào Offline Queue
-            ok = False
-            media_id = None
-            for u_attempt in range(1, MAX_UPLOAD_RETRIES + 1):
+            # Thử upload tối đa MAX_UPLOAD_RETRIES lần
+            ok, media_id = False, None
+            for attempt in range(1, MAX_UPLOAD_RETRIES + 1):
                 ok, media_id = self._do_upload_to_server(final_bytes, thumb, metadata)
-                if ok and media_id:
+                if ok:
                     break
-                log.warning("⚠️ Upload ảnh %s lần %d/%d thất bại.%s",
-                            filename, u_attempt, MAX_UPLOAD_RETRIES,
-                            " Thử lại sau 2s..." if u_attempt < MAX_UPLOAD_RETRIES else " Đẩy vào Offline Queue.")
-                if u_attempt < MAX_UPLOAD_RETRIES:
+                log.warning("⚠️ Upload lần %d/%d thất bại.%s",
+                            attempt, MAX_UPLOAD_RETRIES,
+                            f" Thử lại sau {UPLOAD_RETRY_DELAY}s..." if attempt < MAX_UPLOAD_RETRIES else " → Offline Queue.")
+                if attempt < MAX_UPLOAD_RETRIES:
                     time.sleep(UPLOAD_RETRY_DELAY)
 
             if ok and media_id:
-                log.info("🎉 Upload THÀNH CÔNG! media_id=%s file=%s (%d bytes, %dx%d)",
+                log.info("🎉 Upload OK! media_id=%s file=%s (%d bytes, %dx%d)",
                          media_id, filename, len(final_bytes), width, height)
                 media_ids.append(media_id)
             else:
                 self.offline_queue.save_pending_capture(final_bytes, thumb, metadata)
 
-        # 2. Tắt nguồn máy ảnh nếu không chạy LiveView
+        # Tắt nguồn máy ảnh nếu không chạy LiveView và khoảng cách chụp dài
         if not self.live_session_id and not self.always_keep_power:
             if self.capture_interval_sec == 0 or self.capture_interval_sec > 15:
                 self.power_manager.power_off()
@@ -222,126 +234,150 @@ class CameraAgent:
     def _normalize_image_bytes(self, raw_bytes, preview_bytes=None):
         if preview_bytes:
             try:
-                with Image.open(io.BytesIO(preview_bytes)) as prv_im:
-                    pw, ph = prv_im.size
-                    if prv_im.format == "JPEG" and pw >= 600 and ph >= 400:
+                with Image.open(io.BytesIO(preview_bytes)) as im:
+                    pw, ph = im.size
+                    if im.format == "JPEG" and pw >= 600 and ph >= 400:
                         return preview_bytes, pw, ph
             except Exception:
                 pass
-
         try:
             with Image.open(io.BytesIO(raw_bytes)) as im:
                 w, h = im.size
                 if im.format == "JPEG" and w >= 600 and h >= 400:
                     return raw_bytes, w, h
-
                 buf = io.BytesIO()
                 rgb = im.convert("RGB")
-                rgb.save(buf, format="JPEG", quality=90)
-                res = buf.getvalue()
-                return res, rgb.size[0], rgb.size[1]
+                rgb.save(buf, "JPEG", quality=90)
+                return buf.getvalue(), rgb.size[0], rgb.size[1]
         except Exception as e:
-            log.warning("Không thể decode định dạng ảnh (%s), giữ nguyên raw byte", e)
+            log.warning("Không decode được ảnh (%s), giữ nguyên.", e)
             return raw_bytes, 1920, 1080
 
+    # ── Telemetry ─────────────────────────────────────────────────────────────
+
     def publish_telemetry(self):
-        payload = {
-            "node": "cm4",
-            "cm4_power_state": "running",
-            "camera_gpio_power": "ON" if self.power_manager.is_powered else "OFF",
-            "sim_active_node": "cm4",
-            "battery_percent": random.randint(90, 100),
-            "battery_voltage": round(random.uniform(12.2, 12.6), 3),
-            "cell_voltages": [3.8, 3.8, 3.8],
-            "is_charging": True,
-            "solar_voltage": round(random.uniform(14.0, 18.0), 2),
-            "solar_percent": 100,
-            "temperature_c": round(random.uniform(28.0, 35.0), 1),
-            "humidity_percent": random.randint(55, 75),
-            "sim_signal_dbm": random.randint(-75, -60),
-            "firmware_version": "cm4-autotimelapse-v1.0",
-        }
-        if self.mqtt_client and self.mqtt_client.is_connected():
-            try:
-                self.mqtt_client.publish(self.t_data, json.dumps(payload), qos=1)
-                log.info("📡 Telemetry [CM4]: Pin %s%%, %.1f°C, CamPower: %s, Mode: %s",
-                         payload["battery_percent"], payload["temperature_c"],
-                         payload["camera_gpio_power"],
-                         "GPHOTO2_USB" if self.backend.use_real_hardware else "SIMULATED_PIL")
-            except Exception as e:
-                log.warning("Lỗi publish Telemetry: %s", e)
+        """Thu thập telemetry thật từ phần cứng CM4 và publish lên MQTT."""
+        if not self.mqtt_client or not self.mqtt_client.is_connected():
+            return
+        try:
+            payload = collect_telemetry(
+                camera_code=self.code,
+                is_powered=self.power_manager.is_powered,
+                use_real_hw=self.backend.use_real_hardware,
+                firmware_version=FIRMWARE_VERSION,
+            )
+            # Bổ sung trạng thái watchdog threads
+            payload["threads"] = self.watchdog.status_report()
+
+            self.mqtt_client.publish(self.t_data, json.dumps(payload), qos=1)
+            log.info("📡 Telemetry [CM4]: %.1f°C CPU%.0f%% RAM%.0f%% Signal:%ddBm[%s] CamPwr:%s Mode:%s",
+                     payload["temperature_c"], payload["cpu_percent"],
+                     payload["memory_percent"], payload["sim_signal_dbm"],
+                     payload["sim_source"],
+                     payload["camera_gpio_power"],
+                     payload["camera_hw_mode"])
+        except Exception as e:
+            log.warning("Lỗi publish Telemetry: %s", e)
+
+    # ── Command Processor ─────────────────────────────────────────────────────
 
     def process_command(self, req):
-        cmd = req.get("command", "")
-        rid = req.get("request_id", "")
+        cmd     = req.get("command", "")
+        rid     = req.get("request_id", "")
         payload = req.get("payload") or {}
-        log.info("📥 Nhận lệnh từ Server: %s (req_id=%s)", cmd, rid)
+        log.info("📥 Nhận lệnh MQTT: %s (req_id=%s)", cmd, rid)
 
         try:
+            # Power commands
             if cmd in ("power_on_cm4", "power_on"):
                 self.power_manager.power_on()
-                resp = {"type": cmd, "request_id": rid, "status": "ok", "data": {"cm4_power_state": "running", "camera_power": "on"}}
+                resp = {"type": cmd, "request_id": rid, "status": "ok",
+                        "data": {"cm4_power_state": "running", "camera_power": "on"}}
 
             elif cmd in ("power_off_camera", "power_off"):
                 self.power_manager.power_off()
-                resp = {"type": cmd, "request_id": rid, "status": "ok", "data": {"camera_power": "off"}}
+                resp = {"type": cmd, "request_id": rid, "status": "ok",
+                        "data": {"camera_power": "off"}}
 
+            # Camera settings
             elif cmd == "set_settings":
                 if not self.power_manager.is_powered:
                     self.power_manager.power_on()
-                applied, capabilities, mismatches = self.backend.set_settings(payload)
+                applied, caps, mismatches = self.backend.set_settings(payload)
                 resp = {"type": cmd, "request_id": rid, "status": "ok",
-                        "data": {"requested": payload, "applied": applied, "capabilities": capabilities, "mismatches": mismatches}}
+                        "data": {"requested": payload, "applied": applied,
+                                 "capabilities": caps, "mismatches": mismatches}}
 
             elif cmd in ("get_settings", "get_capabilities", "get_status"):
-                applied, capabilities = self.backend.get_settings()
+                applied, caps = self.backend.get_settings()
                 resp = {"type": cmd, "request_id": rid, "status": "ok",
-                        "data": {"online": True, "applied": applied, "capabilities": capabilities,
+                        "data": {"online": True, "applied": applied, "capabilities": caps,
                                  "live_view": bool(self.live_session_id),
-                                 "camera_power": "on" if self.power_manager.is_powered else "off"}}
+                                 "camera_power": "on" if self.power_manager.is_powered else "off",
+                                 "threads": self.watchdog.status_report()}}
 
+            # SIM info - real hardware or fallback
             elif cmd == "get_sim_info":
-                resp = {"type": "get_sim_info", "request_id": rid, "status": "ok",
-                        "data": {"sim": {**SIM_INFO_TELEMETRY, "signal_dbm": -65}}}
+                sim = get_sim_info(force=True)
+                resp = {"type": cmd, "request_id": rid, "status": "ok",
+                        "data": {"sim": sim}}
 
+            # Capture
             elif cmd in ("capture_now", "capture"):
                 media_ids = self.upload_capture()
                 if media_ids:
-                    resp = {"type": cmd, "request_id": rid, "status": "ok", "data": {"media_id": media_ids[0], "media_ids": media_ids}}
+                    resp = {"type": cmd, "request_id": rid, "status": "ok",
+                            "data": {"media_id": media_ids[0], "media_ids": media_ids}}
                 else:
-                    resp = {"type": cmd, "request_id": rid, "status": "ok", "data": {"note": "Đã lưu ảnh vào Offline Queue (Mất mạng/Server error)"}}
+                    resp = {"type": cmd, "request_id": rid, "status": "ok",
+                            "data": {"note": "Ảnh đã lưu vào Offline Queue"}}
 
+            # Interval
             elif cmd == "set_interval":
                 val = max(0, int(payload.get("capture_interval_sec", self.capture_interval_sec)))
                 self.capture_interval_sec = val
-                log.info("⏱ Cập nhật chu kỳ chụp tự động: %d giây", val)
-                resp = {"type": "set_interval", "request_id": rid, "status": "ok", "data": {"capture_interval_sec": val}}
+                log.info("⏱ Chu kỳ chụp: %d giây", val)
+                resp = {"type": cmd, "request_id": rid, "status": "ok",
+                        "data": {"capture_interval_sec": val}}
 
+            # Live view
             elif cmd == "start_live_view":
                 self.power_manager.power_on()
                 self.live_session_id = payload.get("session_id") or "lv-cm4"
                 self.live_fps = max(1, min(2, int(payload.get("fps") or 1)))
                 self.live_seq = 0
-                resp = {"type": "start_live_view", "request_id": rid, "status": "ok",
-                        "data": {"live_view": True, "session_id": self.live_session_id, "fps": self.live_fps}}
+                resp = {"type": cmd, "request_id": rid, "status": "ok",
+                        "data": {"live_view": True, "session_id": self.live_session_id,
+                                 "fps": self.live_fps}}
 
             elif cmd == "stop_live_view":
                 self.live_session_id = None
                 if not self.always_keep_power and self.capture_interval_sec == 0:
                     self.power_manager.power_off()
-                resp = {"type": "stop_live_view", "request_id": rid, "status": "ok", "data": {"live_view": False}}
+                resp = {"type": cmd, "request_id": rid, "status": "ok",
+                        "data": {"live_view": False}}
+
+            # Watchdog status
+            elif cmd == "get_watchdog_status":
+                resp = {"type": cmd, "request_id": rid, "status": "ok",
+                        "data": {"threads": self.watchdog.status_report()}}
 
             else:
-                resp = {"type": cmd, "request_id": rid, "status": "error", "data": {"note": f"Lệnh chưa hỗ trợ: {cmd}"}}
+                resp = {"type": cmd, "request_id": rid, "status": "error",
+                        "data": {"note": f"Lệnh chưa hỗ trợ: {cmd}"}}
 
         except Exception as exc:
-            log.exception("Xử lý lệnh %s lỗi: %s", cmd, exc)
-            resp = {"type": cmd, "request_id": rid, "status": "error", "data": {"note": str(exc)}}
+            log.exception("Lỗi xử lý lệnh %s: %s", cmd, exc)
+            resp = {"type": cmd, "request_id": rid, "status": "error",
+                    "data": {"note": str(exc)}}
 
         if self.mqtt_client and self.mqtt_client.is_connected():
             self.mqtt_client.publish(self.t_ack, json.dumps(resp), qos=1)
 
-    def live_view_thread(self):
+    # ── Worker Thread Functions (đăng ký với Watchdog) ────────────────────────
+
+    def _fn_live_view(self):
+        """Thread: Phát Live View Frame liên tục về Server."""
         while self.running:
             if not self.live_session_id:
                 time.sleep(0.5)
@@ -351,20 +387,20 @@ class CameraAgent:
                 frame = self.backend.preview()
                 st, resp = self._http_post_frame(self.live_session_id, self.live_seq, frame)
                 if st == 200 and resp.get("ok"):
-                    log.debug("Stream live frame seq=%d (%d bytes)", self.live_seq, len(frame))
+                    log.debug("Live frame seq=%d (%d bytes)", self.live_seq, len(frame))
             except Exception as e:
                 log.warning("Lỗi stream live view: %s", e)
             time.sleep(max(0.5, 1.0 / max(1, self.live_fps)))
 
-    def capture_loop_thread(self):
-        log.info("🔄 Capture Loop thread started.")
+    def _fn_capture_loop(self):
+        """Thread: Điều khiển chu kỳ chụp tự động Interval."""
         while self.running:
             wait = self.capture_interval_sec
             if wait <= 0:
                 time.sleep(1)
                 continue
 
-            log.info("⏱ Chu kỳ chụp kế tiếp sau %d giây", wait)
+            log.info("⏱ Chụp kế tiếp sau %d giây", wait)
             elapsed = 0
             while elapsed < wait and self.running:
                 time.sleep(1)
@@ -374,22 +410,23 @@ class CameraAgent:
 
             if self.running and self.capture_interval_sec == wait:
                 try:
-                    log.info("🔔 Kích hoạt chu kỳ chụp tự động...")
+                    log.info("🔔 Bắt đầu chu kỳ chụp tự động...")
                     self.upload_capture()
                 except Exception:
-                    log.exception("Lỗi trong chu kỳ chụp tự động")
+                    log.exception("Lỗi chu kỳ chụp tự động")
 
-    def offline_retry_thread(self):
-        log.info("🔄 Offline Retry Thread started (Chu kỳ: %ds).", self.offline_retry_interval)
+    def _fn_offline_retry(self):
+        """Thread: Định kỳ gửi lại ảnh trong Offline Queue."""
         while self.running:
             time.sleep(self.offline_retry_interval)
             if self.running:
                 try:
                     self.offline_queue.process_pending_queue(self._do_upload_to_server)
                 except Exception as e:
-                    log.error("Lỗi trong luồng retry offline queue: %s", e)
+                    log.error("Lỗi offline retry: %s", e)
 
-    def cmd_worker_thread(self):
+    def _fn_cmd_worker(self):
+        """Thread: Xử lý hàng đợi lệnh MQTT."""
         while self.running:
             try:
                 raw = self.cmd_queue.get(timeout=1)
@@ -399,68 +436,96 @@ class CameraAgent:
             except Exception as exc:
                 log.error("cmd_worker error: %s", exc)
 
-    def start(self):
-        self.running = True
-        log.info("==========================================================")
-        log.info("🚀 KHỞI ĐỘNG AUTOTIMELAPSE CM4 CAMERA AGENT")
-        log.info("📷 Code Camera: %s", self.code)
-        log.info("📡 MQTT Broker: %s:%d", self.broker, self.port)
-        log.info("🌐 Server Base : %s", self.server_base)
-        log.info("⚡ GPIO Power  : Pin %d (Active %s, Warmup: %.1fs)",
-                 self.power_manager.pin,
-                 "HIGH" if self.power_manager.active_high else "LOW",
-                 self.power_manager.warmup_delay)
-        log.info("🔁 Upload Retry: Tối đa %d lần (Delay: %.1fs)",
-                 MAX_UPLOAD_RETRIES, UPLOAD_RETRY_DELAY)
-        log.info("📁 Offline Dir : %s (Retry Interval: %ds)",
-                 self.offline_queue.queue_dir, self.offline_retry_interval)
-        log.info("==========================================================")
+    # ── MQTT Setup ────────────────────────────────────────────────────────────
 
-        threading.Thread(target=self.live_view_thread, daemon=True, name="liveview").start()
-        threading.Thread(target=self.capture_loop_thread, daemon=True, name="capture_loop").start()
-        threading.Thread(target=self.offline_retry_thread, daemon=True, name="offline_retry").start()
-        threading.Thread(target=self.cmd_worker_thread, daemon=True, name="cmd_worker").start()
-
+    def _setup_mqtt(self):
         def on_connect(client, userdata, flags, rc, props=None):
             if rc == 0:
-                log.info("✅ Kết nối / Tái kết nối MQTT Broker thành công!")
+                log.info("✅ MQTT Kết nối OK!")
                 client.subscribe(self.t_cmd, qos=1)
                 client.publish(self.t_status, json.dumps({"online": True}), qos=1, retain=True)
                 self.publish_telemetry()
-                threading.Thread(target=self.offline_queue.process_pending_queue,
-                                 args=(self._do_upload_to_server,),
-                                 daemon=True).start()
+                # Flush offline queue ngay khi có mạng trở lại
+                threading.Thread(
+                    target=self.offline_queue.process_pending_queue,
+                    args=(self._do_upload_to_server,),
+                    daemon=True
+                ).start()
             else:
-                log.error("❌ Kết nối MQTT thất bại với mã return code: %s", rc)
+                log.error("❌ MQTT kết nối thất bại rc=%s", rc)
 
         def on_message(client, userdata, msg):
             try:
                 raw = json.loads(msg.payload.decode())
                 self.cmd_queue.put(raw)
             except Exception as exc:
-                log.error("Lỗi giải mã thông điệp MQTT: %s", exc)
+                log.error("Lỗi giải mã MQTT message: %s", exc)
 
         def on_disconnect(client, userdata, flags, rc, props=None):
-            log.warning("⚠️ Mất kết nối MQTT Broker (rc=%s). Đang tự động kết nối lại...", rc)
+            log.warning("⚠️ MQTT mất kết nối (rc=%s). Paho sẽ tự reconnect...", rc)
 
         client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=self.code)
         client.username_pw_set(self.code, self.password)
         client.will_set(self.t_status, json.dumps({"online": False}), qos=1, retain=True)
-        client.on_connect = on_connect
-        client.on_message = on_message
+        client.reconnect_delay_set(min_delay=2, max_delay=30)
+        client.on_connect    = on_connect
+        client.on_message    = on_message
         client.on_disconnect = on_disconnect
+
         self.mqtt_client = client
 
-        # Tự động Reconnect Loop
+        # Kết nối ban đầu với retry vòng lặp
         while self.running:
             try:
                 client.connect(self.broker, self.port, keepalive=60)
                 client.loop_start()
-                break
+                return
             except Exception as e:
-                log.error("❌ Chưa thể kết nối MQTT Broker tại %s:%d (%s). Thử lại sau 5s...", self.broker, self.port, e)
+                log.error("Chưa thể kết nối MQTT %s:%d (%s). Thử lại sau 5s...",
+                          self.broker, self.port, e)
                 time.sleep(5)
 
+    # ── Start / Stop ──────────────────────────────────────────────────────────
+
+    def start(self):
+        self.running = True
+        log.info("=" * 60)
+        log.info("🚀 AUTOTIMELAPSE CM4 AGENT [%s]", FIRMWARE_VERSION)
+        log.info("📷 Camera: %s | MQTT: %s:%d", self.code, self.broker, self.port)
+        log.info("🌐 Server: %s", self.server_base)
+        log.info("⚡ GPIO Power Pin %d | Warmup %.1fs | Keep=%s",
+                 self.power_manager.pin, self.power_manager.warmup_delay,
+                 self.always_keep_power)
+        log.info("🔁 Upload Retry %dx delay %.1fs | Offline Retry %ds",
+                 MAX_UPLOAD_RETRIES, UPLOAD_RETRY_DELAY, self.offline_retry_interval)
+        log.info("📁 Offline Queue: %s", self.offline_queue.queue_dir)
+        log.info("=" * 60)
+
+        # Đăng ký các thread với Watchdog
+        self.watchdog.register(ManagedThread(
+            name="liveview", target_fn=self._fn_live_view,
+            restart_on_crash=True, heartbeat_timeout=0
+        ))
+        self.watchdog.register(ManagedThread(
+            name="capture_loop", target_fn=self._fn_capture_loop,
+            restart_on_crash=True, heartbeat_timeout=0
+        ))
+        self.watchdog.register(ManagedThread(
+            name="offline_retry", target_fn=self._fn_offline_retry,
+            restart_on_crash=True, heartbeat_timeout=0
+        ))
+        self.watchdog.register(ManagedThread(
+            name="cmd_worker", target_fn=self._fn_cmd_worker,
+            restart_on_crash=True, heartbeat_timeout=60
+        ))
+
+        # Khởi động Watchdog (tự spawn tất cả threads)
+        self.watchdog.start(lambda: self.running)
+
+        # Thiết lập MQTT (blocking cho tới khi kết nối thành công)
+        self._setup_mqtt()
+
+        # Vòng lặp chính: phát telemetry định kỳ
         last_telemetry = time.time()
         try:
             while self.running:
@@ -469,19 +534,21 @@ class CameraAgent:
                     self.publish_telemetry()
                     last_telemetry = time.time()
         except KeyboardInterrupt:
-            log.info("\n⏹ Đã nhận tín hiệu dừng (KeyboardInterrupt)...")
+            log.info("⏹ Nhận KeyboardInterrupt. Đang dừng...")
         finally:
             self.stop()
 
     def stop(self):
         if not self.running:
             return
-        log.info("🛑 Đang dừng Agent & dọn dẹp tài nguyên...")
+        log.info("🛑 Đang dừng Agent...")
         self.running = False
+        self.watchdog.stop()
 
         if self.mqtt_client:
             try:
-                self.mqtt_client.publish(self.t_status, json.dumps({"online": False}), qos=1, retain=True)
+                self.mqtt_client.publish(self.t_status,
+                                         json.dumps({"online": False}), qos=1, retain=True)
                 self.mqtt_client.loop_stop()
                 self.mqtt_client.disconnect()
             except Exception:
@@ -491,16 +558,26 @@ class CameraAgent:
         log.info("👋 Agent đã dừng hoàn toàn.")
 
 
+# ── MAIN ──────────────────────────────────────────────────────────────────────
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="AutoTimelapse CM4 Camera Agent")
-    parser.add_argument("--code", default=CAMERA_CODE, help=f"Mã định danh Camera [Mặc định: {CAMERA_CODE}]")
-    parser.add_argument("--secret", default=MQTT_PASSWORD, help="Mật khẩu thiết bị / MQTT Password")
-    parser.add_argument("--broker", default=MQTT_BROKER, help=f"MQTT Broker host [Mặc định: {MQTT_BROKER}]")
-    parser.add_argument("--port", type=int, default=MQTT_PORT, help=f"MQTT Broker port [Mặc định: {MQTT_PORT}]")
-    parser.add_argument("--server", default=SERVER_BASE, help=f"Server Base URL [Mặc định: {SERVER_BASE}]")
-    parser.add_argument("--power-gpio", type=int, default=POWER_GPIO_PIN, help=f"GPIO Pin điều khiển nguồn [Mặc định: {POWER_GPIO_PIN}]")
-    parser.add_argument("--warmup", type=float, default=WARMUP_DELAY_SEC, help=f"Thời gian chờ máy ảnh khởi động (s) [Mặc định: {WARMUP_DELAY_SEC}]")
-    parser.add_argument("--offline-dir", default=OFFLINE_QUEUE_DIR, help=f"Thư mục lưu đệm offline [Mặc định: {OFFLINE_QUEUE_DIR}]")
+    parser.add_argument("--code",        default=CAMERA_CODE,
+                        help=f"Mã Camera [Mặc định: {CAMERA_CODE}]")
+    parser.add_argument("--secret",      default=MQTT_PASSWORD,
+                        help="Mật khẩu thiết bị / MQTT Password")
+    parser.add_argument("--broker",      default=MQTT_BROKER,
+                        help=f"MQTT Broker host [Mặc định: {MQTT_BROKER}]")
+    parser.add_argument("--port",        type=int, default=MQTT_PORT,
+                        help=f"MQTT Broker port [Mặc định: {MQTT_PORT}]")
+    parser.add_argument("--server",      default=SERVER_BASE,
+                        help=f"Server Base URL [Mặc định: {SERVER_BASE}]")
+    parser.add_argument("--power-gpio",  type=int, default=POWER_GPIO_PIN,
+                        help=f"GPIO Pin điều khiển nguồn [Mặc định: {POWER_GPIO_PIN}]")
+    parser.add_argument("--warmup",      type=float, default=WARMUP_DELAY_SEC,
+                        help=f"Delay warmup máy ảnh (s) [Mặc định: {WARMUP_DELAY_SEC}]")
+    parser.add_argument("--offline-dir", default=OFFLINE_QUEUE_DIR,
+                        help=f"Thư mục offline queue [Mặc định: {OFFLINE_QUEUE_DIR}]")
 
     args = parser.parse_args()
 
