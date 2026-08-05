@@ -19,7 +19,11 @@ POWER_GPIO_PIN     = int(os.getenv("POWER_GPIO_PIN", "16"))
 POWER_ACTIVE_HIGH  = os.getenv("POWER_ACTIVE_HIGH", "true").lower() in ("true", "1", "yes")
 WARMUP_DELAY_SEC   = float(os.getenv("WARMUP_DELAY_SEC", "3.0"))
 ALWAYS_KEEP_POWER  = os.getenv("ALWAYS_KEEP_POWER", "false").lower() in ("true", "1", "yes")
+
+# Cấu hình Số lần Thử lại (Retry Rules)
 MAX_CAMERA_RETRIES = int(os.getenv("MAX_CAMERA_RETRIES", "3"))
+MAX_UPLOAD_RETRIES = int(os.getenv("MAX_UPLOAD_RETRIES", "3"))
+UPLOAD_RETRY_DELAY = float(os.getenv("UPLOAD_RETRY_DELAY", "2.0"))
 
 # Cấu hình Telemetry & Hàng Đợi Offline
 TELEMETRY_INTERVAL     = int(os.getenv("TELEMETRY_INTERVAL", "30"))

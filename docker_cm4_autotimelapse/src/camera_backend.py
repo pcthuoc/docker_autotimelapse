@@ -3,7 +3,8 @@
 AutoTimelapse CM4 Agent - Module Camera Backend
 ------------------------------------------------------------------
 Quản lý giao tiếp trực tiếp với Máy ảnh qua USB (python-gphoto2).
-Tích hợp tự động Reset cổng USB khi gặp lỗi kẹt device (-60 / -1)
+Tích hợp tự động Reset cổng USB khi gặp lỗi kẹt device (-60 / -1),
+Khởi động lại nguồn GPIO 16 (Hard Cycle Power) nếu kẹt nặng,
 và Fallback sang giả lập ảnh bằng PIL nếu không cắm phần cứng.
 """
 
@@ -48,6 +49,7 @@ class HybridCameraBackend:
         }
 
     def _try_init_real_camera(self):
+        """Kết nối máy ảnh thật qua USB gphoto2 với cơ chế USB Reset & Power Cycle khi lỗi."""
         with self._lock:
             if self._camera is not None:
                 return True
@@ -84,9 +86,15 @@ class HybridCameraBackend:
                     self.use_real_hardware = False
 
                     if attempt < MAX_CAMERA_RETRIES:
-                        log.info("🛠️ Đang kích hoạt Reset Cổng USB phần cứng để sửa lỗi lock device...")
+                        # Thử 1: Reset cổng USB ioctl
+                        log.info("🛠️ Reset cổng USB phần cứng bằng ioctl để sửa lỗi lock device...")
                         reset_all_camera_usb_devices()
                         time.sleep(1.5)
+
+                        # Thử 2: Ở lần thử gần cuối, nếu USB vẫn kẹt, tiến hành Hard Cycle Power qua GPIO 16!
+                        if attempt == MAX_CAMERA_RETRIES - 1:
+                            log.warning("🔌 Máy ảnh không phản hồi qua USB. Kích hoạt Hard Power Cycle qua GPIO 16...")
+                            self.power_manager.hard_cycle_power()
 
             log.info("ℹ️ Không thể kết nối máy ảnh USB gphoto2 — Tự động chuyển sang Chế độ Giả Lập Ảnh (PIL).")
             return False

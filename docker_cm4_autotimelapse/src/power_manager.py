@@ -3,6 +3,7 @@
 AutoTimelapse CM4 Agent - Module Quản Lý Nguồn GPIO
 ------------------------------------------------------------------
 Điều khiển Bật/Tắt nguồn máy ảnh qua chân GPIO (mặc định GPIO 16) trên Raspberry Pi CM4.
+Hỗ trợ Reset nguồn cứng (Hard Power Cycle) khi thiết bị USB bị kẹt.
 """
 
 import time
@@ -76,6 +77,13 @@ class CameraPowerManager:
                 self.is_powered = False
                 return True
             return False
+
+    def hard_cycle_power(self, power_off_delay=2.5):
+        """Tắt nguồn GPIO 16, chờ delay rồi bật lại để khởi động lại máy ảnh khi USB kẹt."""
+        log.warning("🔄 [HARD POWER CYCLE] Tiến hành khởi động lại nguồn máy ảnh qua GPIO %d...", self.pin)
+        self.power_off()
+        time.sleep(power_off_delay)
+        self.power_on()
 
     def cleanup(self):
         if self.has_hardware_gpio:
