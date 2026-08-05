@@ -103,6 +103,6 @@ class OfflineQueueManager:
                             log.warning("Lỗi dọn dẹp file offline: %s", e)
                     else:
                         log.warning("⚠️ Upload lại ảnh offline %s chưa thành công. Sẽ thử lại lần sau...", json_file)
-                        break  # Dừng batch đợt này để tránh spam server nếu server vẫn chưa sẵn sàng
+                        break
                 except Exception as e:
                     log.error("Lỗi xử lý file offline %s: %s", json_file, e)

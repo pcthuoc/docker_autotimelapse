@@ -13,7 +13,6 @@ import logging
 
 log = logging.getLogger("cm4_usb_utils")
 
-# ioctl constant for USBDEVFS_RESET (Linux)
 USBDEVFS_RESET = 21780
 
 def reset_usb_device_path(dev_path):
@@ -47,7 +46,6 @@ def reset_all_camera_usb_devices():
                 continue
             for dev in os.listdir(bus_path):
                 dev_path = os.path.join(bus_path, dev)
-                # Bỏ qua root hubs (001)
                 if dev == "001":
                     continue
                 if reset_usb_device_path(dev_path):

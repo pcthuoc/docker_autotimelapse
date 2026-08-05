@@ -22,7 +22,6 @@ from datetime import datetime, timezone
 
 from PIL import Image
 
-# Import các sub-modules chuyên nghiệp
 from config import (
     CAMERA_CODE, MQTT_PASSWORD, MQTT_BROKER, MQTT_PORT, SERVER_BASE,
     POWER_GPIO_PIN, POWER_ACTIVE_HIGH, WARMUP_DELAY_SEC, ALWAYS_KEEP_POWER,
@@ -33,14 +32,12 @@ from power_manager import CameraPowerManager
 from offline_queue import OfflineQueueManager
 from camera_backend import HybridCameraBackend
 
-# Kiểm tra paho-mqtt
 try:
     import paho.mqtt.client as mqtt
 except ImportError:
     print("❌ Lỗi: Chưa cài đặt paho-mqtt. Hãy chạy: pip install paho-mqtt pillow")
     sys.exit(1)
 
-# Format logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] [%(threadName)s] %(message)s",
@@ -65,20 +62,15 @@ class CameraAgent:
         self.telemetry_interval = telemetry_interval
         self.offline_retry_interval = offline_retry_interval
 
-        # 1. Khởi tạo Power Manager (GPIO 16)
         self.power_manager = CameraPowerManager(
             pin=power_pin,
             active_high=power_active_high,
             warmup_delay=warmup_delay
         )
 
-        # 2. Quản lý Hàng Đợi Offline
         self.offline_queue = OfflineQueueManager(queue_dir=offline_dir)
-
-        # 3. Hybrid Camera Backend (USB gphoto2 + PIL Fallback)
         self.backend = HybridCameraBackend(self.power_manager)
 
-        # 4. Trạng thái các luồng hoạt động
         self.running = False
         self.capture_interval_sec = 0
         self.live_session_id = None
@@ -87,7 +79,6 @@ class CameraAgent:
         self.cmd_queue = _queue.SimpleQueue()
         self.mqtt_client = None
 
-        # MQTT Topics
         self.t_cmd = f"camera/{self.code}/cmd"
         self.t_ack = f"camera/{self.code}/ack"
         self.t_data = f"camera/{self.code}/data"
@@ -127,12 +118,10 @@ class CameraAgent:
             return r.status
 
     def _do_upload_to_server(self, final_bytes, thumb_bytes, metadata):
-        """Thực hiện trực tiếp các bước Upload S3 Presigned URL & Complete API."""
         try:
             content_type = metadata.get("content_type", "image/jpeg")
             taken_at = metadata.get("taken_at") or datetime.now(timezone.utc).isoformat()
 
-            # Step 1: Xin Presigned URL
             st, pre = self._http_post_json("/api/device/upload/presign/", {
                 "content_type": content_type,
                 "taken_at": taken_at,
@@ -142,12 +131,10 @@ class CameraAgent:
                 log.error("Lỗi xin Presigned URL từ server: status=%s resp=%s", st, pre)
                 return False, None
 
-            # Step 2: Upload file ảnh & thumbnail lên S3 / SeaweedFS
             self._http_put(pre["url"], final_bytes, content_type)
             if thumb_bytes is not None and "thumb_url" in pre:
                 self._http_put(pre["thumb_url"], thumb_bytes, "image/jpeg")
 
-            # Step 3: Hoàn tất đăng ký dữ liệu ảnh
             st, done = self._http_post_json("/api/device/upload/complete/", {
                 "media_id": pre["media_id"],
                 "key": pre["key"],
@@ -170,8 +157,6 @@ class CameraAgent:
             return False, None
 
     def upload_capture(self):
-        """Thực hiện chu trình chụp ảnh: GPIO ON -> Chụp -> Upload (hoặc Offline Queue) -> Power Management."""
-        # 1. Bật nguồn máy ảnh
         self.power_manager.power_on()
 
         taken_at = datetime.now(timezone.utc).isoformat()
@@ -201,7 +186,6 @@ class CameraAgent:
                 "camera_code": self.code,
             }
 
-            # Upload trực tiếp hoặc đẩy vào Offline Queue khi lỗi
             ok, media_id = self._do_upload_to_server(final_bytes, thumb, metadata)
             if ok and media_id:
                 log.info("🎉 Upload THÀNH CÔNG! media_id=%s file=%s (%d bytes, %dx%d)",
@@ -210,7 +194,6 @@ class CameraAgent:
             else:
                 self.offline_queue.save_pending_capture(final_bytes, thumb, metadata)
 
-        # 2. Tắt nguồn máy ảnh nếu không chạy LiveView
         if not self.live_session_id and not self.always_keep_power:
             if self.capture_interval_sec == 0 or self.capture_interval_sec > 15:
                 self.power_manager.power_off()
@@ -336,8 +319,6 @@ class CameraAgent:
         if self.mqtt_client and self.mqtt_client.is_connected():
             self.mqtt_client.publish(self.t_ack, json.dumps(resp), qos=1)
 
-    # ── WORKER THREADS ───────────────────────────────────────────────────────
-
     def live_view_thread(self):
         while self.running:
             if not self.live_session_id:
@@ -399,7 +380,7 @@ class CameraAgent:
     def start(self):
         self.running = True
         log.info("==========================================================")
-        log.info("🚀 KHỞI ĐỘNG AUTOTIMELAPSE CM4 CAMERA AGENT (MODULAR)")
+        log.info("🚀 KHỞI ĐỘNG AUTOTIMELAPSE CM4 CAMERA AGENT (SRC MODULE)")
         log.info("📷 Code Camera: %s", self.code)
         log.info("📡 MQTT Broker: %s:%d", self.broker, self.port)
         log.info("🌐 Server Base : %s", self.server_base)

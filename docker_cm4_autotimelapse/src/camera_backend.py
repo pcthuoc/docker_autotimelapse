@@ -20,7 +20,6 @@ from usb_utils import reset_all_camera_usb_devices
 
 log = logging.getLogger("cm4_camera_backend")
 
-# Kiểm tra gphoto2
 GPHOTO2_AVAILABLE = False
 try:
     import gphoto2 as gp
@@ -38,7 +37,6 @@ class HybridCameraBackend:
         self.use_real_hardware = False
         self.power_manager = power_manager
 
-        # Trạng thái thông số giả lập local
         self._sim_applied = {
             "iso": "100", "aperture": "f/4", "shutter_speed": "1/200",
             "exposure_compensation": "0.0", "white_balance": "Auto",
@@ -50,7 +48,6 @@ class HybridCameraBackend:
         }
 
     def _try_init_real_camera(self):
-        """Kết nối máy ảnh thật qua USB gphoto2 với cơ chế USB Reset khi lỗi."""
         with self._lock:
             if self._camera is not None:
                 return True
@@ -66,7 +63,6 @@ class HybridCameraBackend:
                     self._camera = cam
                     self.use_real_hardware = True
 
-                    # Đảm bảo thiết lập chất lượng ảnh JPEG Fine nếu có
                     try:
                         config = cam.get_config()
                         try:
@@ -87,7 +83,6 @@ class HybridCameraBackend:
                     self._camera = None
                     self.use_real_hardware = False
 
-                    # Nếu gặp lỗi kẹt port/device lock, tiến hành reset cổng USB phần cứng
                     if attempt < MAX_CAMERA_RETRIES:
                         log.info("🛠️ Đang kích hoạt Reset Cổng USB phần cứng để sửa lỗi lock device...")
                         reset_all_camera_usb_devices()
@@ -97,7 +92,6 @@ class HybridCameraBackend:
             return False
 
     def disconnect_real_camera(self):
-        """Đóng kết nối máy ảnh thật và giải phóng cổng USB."""
         with self._lock:
             if self._camera is not None:
                 try:
@@ -137,7 +131,6 @@ class HybridCameraBackend:
                     log.warning("Lỗi đọc cấu hình máy ảnh thật (%s) — Tái kết nối...", e)
                     self.disconnect_real_camera()
 
-        # Fallback Simulated Settings
         capabilities = {
             k: {
                 "writable": v[1],
@@ -170,7 +163,6 @@ class HybridCameraBackend:
                 except Exception as e:
                     log.warning("Không thể ghi cấu hình lên máy ảnh thật: %s", e)
 
-        # Cập nhật trạng thái giả lập local
         settable = {f for f, (_, ok) in SETTING_SPECS.items() if ok}
         for field, val in requested.items():
             if field in settable:
@@ -181,7 +173,6 @@ class HybridCameraBackend:
         return applied, capabilities, mismatches
 
     def capture(self, camera_code="CAM-CM4"):
-        """Chụp ảnh từ máy ảnh thật (USB gphoto2) hoặc sinh ảnh giả lập PIL."""
         if GPHOTO2_AVAILABLE and not self.use_real_hardware:
             self._try_init_real_camera()
 
@@ -190,7 +181,6 @@ class HybridCameraBackend:
                 try:
                     log.info("📸 [REAL CAMERA] Phát lệnh màn trập chụp ảnh...")
                     
-                    # Tắt live view nếu đang mở để lấy nét autofocus chính xác
                     try:
                         config = self._camera.get_config()
                         vf = config.get_child_by_name("viewfinder")
@@ -204,7 +194,6 @@ class HybridCameraBackend:
                     first_path = self._camera.capture(gp.GP_CAPTURE_IMAGE)
                     paths = {(first_path.folder, first_path.name): first_path}
 
-                    # Chờ hoàn thành ghi file trên thẻ nhớ máy ảnh
                     deadline = time.monotonic() + 5
                     while time.monotonic() < deadline:
                         event_type, event_data = self._camera.wait_for_event(400)
@@ -243,7 +232,6 @@ class HybridCameraBackend:
                     log.error("Lỗi chụp trên máy ảnh thật: %s — Đóng kết nối & Chuyển sang Giả lập...", e)
                     self.disconnect_real_camera()
 
-        # Fallback Simulated PIL Image
         log.info("📸 [SIMULATED CAMERA] Đang tạo khung hình giả lập JPEG bằng PIL...")
         time.sleep(0.5)
         img_bytes = self._generate_simulated_image(camera_code=camera_code)
@@ -251,7 +239,6 @@ class HybridCameraBackend:
         return [(filename, img_bytes, None)]
 
     def preview(self):
-        """Lấy khung hình xem trực tiếp (Live View)."""
         if GPHOTO2_AVAILABLE and not self.use_real_hardware:
             self._try_init_real_camera()
 
@@ -262,14 +249,12 @@ class HybridCameraBackend:
                     return bytes(camera_file.get_data_and_size())
                 except Exception:
                     pass
-        # Fallback simulated frame
         return self._generate_simulated_image(width=640, height=424, title="CM4 Live View Stream")
 
     def _generate_simulated_image(self, width=1920, height=1080, title="AutoTimelapse CM4 Camera", camera_code="CAM-CM4"):
         img = Image.new("RGB", (width, height), color=(20, 24, 33))
         draw = ImageDraw.Draw(img)
 
-        # Visual gradient background
         for y in range(0, height, 4):
             r = int(20 + (y / height) * 35)
             g = int(24 + (y / height) * 45)
@@ -285,7 +270,6 @@ class HybridCameraBackend:
         draw.text((80, 75), f"📷 {title} - {camera_code} [{hw_type}]", fill=(0, 230, 255))
         draw.text((80, 105), f"🕒 Timestamp: {now_str} UTC | Power: {pwr_type}", fill=(200, 220, 240))
 
-        # Construction scene graphics
         draw.rectangle([100, 200, 400, height - 100], fill=(45, 55, 72), outline=(100, 116, 139), width=2)
         draw.rectangle([450, 300, 800, height - 100], fill=(30, 41, 59), outline=(100, 116, 139), width=2)
         draw.polygon([(450, 300), (625, 180), (800, 300)], fill=(71, 85, 105))

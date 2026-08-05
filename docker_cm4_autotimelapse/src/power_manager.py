@@ -11,7 +11,6 @@ import threading
 
 log = logging.getLogger("cm4_power_manager")
 
-# Kiểm tra RPi.GPIO cho CM4 Hardware
 HAS_GPIO = False
 try:
     import RPi.GPIO as GPIO
@@ -57,7 +56,7 @@ class CameraPowerManager:
                     on_state = GPIO.HIGH if self.active_high else GPIO.LOW
                     GPIO.output(self.pin, on_state)
                 self.is_powered = True
-                
+
                 if self.warmup_delay > 0:
                     log.info("⏳ Chờ %.1f giây để máy ảnh khởi động & nhận USB...", self.warmup_delay)
                     time.sleep(self.warmup_delay)
