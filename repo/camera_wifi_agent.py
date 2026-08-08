@@ -48,9 +48,9 @@ except ImportError:
 # ── Cấu hình mặc định khi chạy Local ─────────────────────────────────────────
 DEFAULT_CAMERA_CODE   = "CAM-F53RQV"
 DEFAULT_MQTT_PASSWORD = "8_2Vhy43gl6GcPvMuDu3eQ"
-DEFAULT_MQTT_BROKER   = "localhost"
-DEFAULT_MQTT_PORT     = 1884  # Docker compose map 1884:1883 ra host
-DEFAULT_SERVER_BASE   = "http://localhost"  # Nginx listening on port 80
+DEFAULT_MQTT_BROKER   = "mqtt.congnghetimelapse.com"
+DEFAULT_MQTT_PORT     = 1883
+DEFAULT_SERVER_BASE   = "https://cloud.congnghetimelapse.com"
 # ────────────────────────────────────────────────────────────────────────────
 
 logging.basicConfig(

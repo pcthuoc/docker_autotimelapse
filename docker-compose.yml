@@ -3,6 +3,15 @@ services:
     container_name: atl-redis
     image: redis:alpine
     restart: unless-stopped
+    command: >
+      redis-server
+        --maxmemory 128mb
+        --maxmemory-policy allkeys-lru
+        --save ""
+    deploy:
+      resources:
+        limits:
+          memory: 192M
     networks: [app-net]
 
   mosquitto:
@@ -10,7 +19,8 @@ services:
     image: eclipse-mosquitto:2
     restart: unless-stopped
     ports:
-      - "1884:1883"
+      - "1883:1883"
+      - "8083:8083"
     volumes:
       - ./config/mosquitto:/mosquitto/config
       - ./data/mosquitto/data:/mosquitto/data
@@ -39,6 +49,11 @@ services:
       - ./environment/site.env
     environment:
       DJANGO_SETTINGS_MODULE: autotimelapse.settings
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 768M
     networks: [app-net, seaweed-net]
     depends_on:
       - postgres
@@ -52,12 +67,14 @@ services:
     restart: unless-stopped
     ports:
       - "80:80"
+      - "443:443"
     volumes:
       - ./config/nginx/conf.d/:/etc/nginx/conf.d/
+      - ./config/nginx/ssl/:/etc/nginx/ssl/:ro
       - static_data:/static:ro
       - ./repo/frontend/dist:/frontend:ro
-    networks: [app-net]
-    depends_on: [site]
+    networks: [app-net, seaweed-net]
+    depends_on: [site, seaweed-filer]
 
   mqtt_service:
     container_name: atl-mqtt-service
@@ -86,7 +103,7 @@ services:
     image: atl-site:latest
     init: true
     restart: unless-stopped
-    # Q default,archive: nén ZIP và các task nẹ — concurrency=4 để xử lý song song
+    # Q default,archive: nén ZIP và các task nhẹ — concurrency=4 để xử lý song song
     command: celery -A autotimelapse worker -l info -Q default,archive -c 4
     volumes:
       - ./repo/backend:/app
@@ -95,6 +112,11 @@ services:
       - ./environment/site.env
     environment:
       DJANGO_SETTINGS_MODULE: autotimelapse.settings
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
     networks: [app-net, seaweed-net]
     depends_on: [postgres, redis, site]
 
@@ -116,6 +138,11 @@ services:
       - ./environment/site.env
     environment:
       DJANGO_SETTINGS_MODULE: autotimelapse.settings
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1536M
     networks: [app-net, seaweed-net]
     depends_on: [postgres, redis, site]
 
@@ -181,7 +208,7 @@ services:
         -ip.bind=0.0.0.0
         -port=8080
         -dir=/data
-        -max=50
+        -max=20
         -metricsPort=9325
     ports:
       - "127.0.0.1:8080:8080"    # HTTP API (Nội bộ / Localhost)
@@ -247,6 +274,32 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  # pg_dump hàng ngày 01:00, giữ 7 bản gần nhất
+  postgres-backup:
+    container_name: atl-postgres-backup
+    image: postgres:16-alpine
+    restart: unless-stopped
+    env_file:
+      - ./environment/site.env
+    volumes:
+      - ./data/postgres-backup:/backup
+    networks:
+      - app-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        while true; do
+          sleep 3600
+          if [ "$$(date +%%H)" = "01" ]; then
+            PGPASSWORD=$$POSTGRES_PASSWORD pg_dump -h postgres -U $$POSTGRES_USER -d $$POSTGRES_DB -Fc \
+              -f /backup/atl_$$(date +%%Y%%m%%d_%%H%%M).dump \
+              && ls -t /backup/*.dump 2>/dev/null | tail -n +8 | xargs -r rm -f
+          fi
+        done
 
 volumes:
   static_data:
