@@ -233,10 +233,15 @@ class HybridCameraBackend:
         return dict(self._sim_applied), capabilities
 
     def set_settings(self, requested):
+        # Thử kết nối camera thật nếu chưa có — giống get_settings()
+        if GPHOTO2_AVAILABLE and not self.use_real_hardware:
+            self._try_init_real_camera()
+
         if self.use_real_hardware:
             with self._lock:
                 try:
                     config = self._camera.get_config()
+                    failed_widgets = []
                     for field, val in requested.items():
                         if field in SETTING_SPECS and SETTING_SPECS[field][1]:
                             widget_name = SETTING_SPECS[field][0]
@@ -244,9 +249,15 @@ class HybridCameraBackend:
                                 widget = config.get_child_by_name(widget_name)
                                 if not widget.get_readonly():
                                     widget.set_value(str(val))
-                            except Exception:
-                                pass
+                                else:
+                                    log.debug("Widget %s là read-only, bỏ qua", widget_name)
+                            except Exception as e:
+                                failed_widgets.append(f"{field}({widget_name}): {e}")
                     self._camera.set_config(config)
+                    if failed_widgets:
+                        log.warning("⚠️ set_settings — một số widget lỗi: %s", "; ".join(failed_widgets))
+                    else:
+                        log.info("✅ set_settings — Đã ghi %d thông số lên máy ảnh thật", len(requested))
                 except Exception as e:
                     log.warning("Không thể ghi cấu hình lên máy ảnh thật: %s", e)
 
