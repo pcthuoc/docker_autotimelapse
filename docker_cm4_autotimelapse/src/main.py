@@ -87,10 +87,96 @@ class CameraAgent:
         self.cmd_queue = _queue.SimpleQueue()
         self.mqtt_client = None
 
+        self.schedule_enabled = False
+        self.work_start_time = "06:00"
+        self.work_end_time = "18:00"
+        self.schedule_rules = []
+
         self.t_cmd    = f"camera/{self.code}/cmd"
         self.t_ack    = f"camera/{self.code}/ack"
         self.t_data   = f"camera/{self.code}/data"
         self.t_status = f"camera/{self.code}/status"
+
+        self.load_schedule_config()
+
+    def load_schedule_config(self):
+        """Đọc cấu hình lịch chụp từ ổ đĩa đệm (/app/offline_queue/schedules.json)."""
+        filepath = os.path.join(self.offline_queue.queue_dir, "schedules.json")
+        if os.path.exists(filepath):
+            try:
+                with open(filepath, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    self.schedule_rules = data.get("schedules") or []
+                    if "capture_interval_sec" in data:
+                        self.capture_interval_sec = int(data["capture_interval_sec"])
+                    self.schedule_enabled = bool(data.get("schedule_enabled", False))
+                    self.work_start_time = str(data.get("work_start_time", "06:00"))
+                    self.work_end_time = str(data.get("work_end_time", "18:00"))
+                    log.info("📁 [SCHEDULE DISK] Đã tải %d khung giờ chụp từ đĩa", len(self.schedule_rules))
+            except Exception as e:
+                log.warning("Không đọc được schedules.json: %s", e)
+
+    def save_schedule_config(self):
+        """Lưu cấu hình lịch chụp xuống ổ đĩa đệm (/app/offline_queue/schedules.json) để dùng khi offline."""
+        filepath = os.path.join(self.offline_queue.queue_dir, "schedules.json")
+        try:
+            data = {
+                "schedules": self.schedule_rules,
+                "capture_interval_sec": self.capture_interval_sec,
+                "schedule_enabled": self.schedule_enabled,
+                "work_start_time": self.work_start_time,
+                "work_end_time": self.work_end_time,
+            }
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            log.info("💾 [SCHEDULE DISK] Đã lưu %d lịch chụp xuống đĩa", len(self.schedule_rules))
+        except Exception as e:
+            log.warning("Không lưu được schedules.json: %s", e)
+
+    def get_active_schedule_slot(self):
+        """Trả về (is_active, interval_sec, slot_name) cho thời gian hiện tại."""
+        from datetime import datetime, time as time_obj
+        now_dt = datetime.now()
+        weekday = now_dt.isoweekday()  # 1=Mon ... 7=Sun
+        now_time = now_dt.time()
+
+        # 1. Ưu tiên kiểm tra danh sách multi-slot schedules
+        if self.schedule_rules:
+            active_slots = []
+            for slot in self.schedule_rules:
+                if not slot.get("is_enabled", True):
+                    continue
+                days = slot.get("days_of_week") or [1, 2, 3, 4, 5, 6, 7]
+                if days and weekday not in days:
+                    continue
+                try:
+                    sh, sm = map(int, str(slot.get("start_time", "00:00")).split(":"))
+                    eh, em = map(int, str(slot.get("end_time", "23:59")).split(":"))
+                    st, et = time_obj(sh, sm), time_obj(eh, em)
+                    matched = (st <= now_time <= et) if (st <= et) else (now_time >= st or now_time <= et)
+                    if matched:
+                        active_slots.append(slot)
+                except Exception:
+                    pass
+            if active_slots:
+                min_interval = min(int(s.get("interval_sec", 300)) for s in active_slots)
+                slot_names = ", ".join(s.get("name", "Ca") for s in active_slots)
+                return True, max(30, min_interval), slot_names
+            return False, 0, None
+
+        # 2. Fallback về đơn khung giờ
+        if not self.schedule_enabled:
+            return True, self.capture_interval_sec, "Mặc định"
+        try:
+            sh, sm = map(int, self.work_start_time.split(":"))
+            eh, em = map(int, self.work_end_time.split(":"))
+            st, et = time_obj(sh, sm), time_obj(eh, em)
+            matched = (st <= now_time <= et) if (st <= et) else (now_time >= st or now_time <= et)
+            if matched:
+                return True, self.capture_interval_sec, f"Khung giờ {self.work_start_time}–{self.work_end_time}"
+        except Exception:
+            return True, self.capture_interval_sec, "Mặc định"
+        return False, 0, None
 
     # ── HTTP Helpers ──────────────────────────────────────────────────────────
 
@@ -334,9 +420,18 @@ class CameraAgent:
             elif cmd == "set_interval":
                 val = max(0, int(payload.get("capture_interval_sec", self.capture_interval_sec)))
                 self.capture_interval_sec = val
+                self.save_schedule_config()
                 log.info("⏱ Chu kỳ chụp: %d giây", val)
                 resp = {"type": cmd, "request_id": rid, "status": "ok",
                         "data": {"capture_interval_sec": val}}
+
+            elif cmd == "set_schedules":
+                schedules = payload.get("schedules") or []
+                self.schedule_rules = schedules
+                self.save_schedule_config()
+                log.info("🗓 [SCHEDULE] Đã nhận %d khung giờ chụp từ server", len(schedules))
+                resp = {"type": cmd, "request_id": rid, "status": "ok",
+                        "data": {"count": len(schedules)}}
 
             elif cmd == "start_live_view":
                 self.power_manager.power_on()
@@ -391,23 +486,29 @@ class CameraAgent:
     def _fn_capture_loop(self):
         while self.running:
             self.watchdog.touch("capture_loop")
-            wait = self.capture_interval_sec
-            if wait <= 0:
-                time.sleep(1)
+            is_active, interval_sec, slot_name = self.get_active_schedule_slot()
+            if not is_active or interval_sec <= 0:
+                for _ in range(15):
+                    if not self.running:
+                        break
+                    self.watchdog.touch("capture_loop")
+                    time.sleep(1)
                 continue
 
-            log.info("⏱ Chụp kế tiếp sau %d giây", wait)
+            log.info("⏱ [%s] Chụp kế tiếp sau %d giây", slot_name, interval_sec)
             elapsed = 0
-            while elapsed < wait and self.running:
+            while elapsed < interval_sec and self.running:
                 self.watchdog.touch("capture_loop")
                 time.sleep(1)
                 elapsed += 1
-                if self.capture_interval_sec != wait:
+                curr_active, curr_interval, _ = self.get_active_schedule_slot()
+                if not curr_active or curr_interval != interval_sec:
                     break
 
-            if self.running and self.capture_interval_sec == wait:
+            curr_active, _, _ = self.get_active_schedule_slot()
+            if self.running and curr_active:
                 try:
-                    log.info("🔔 Bắt đầu chu kỳ chụp tự động...")
+                    log.info("🔔 [%s] Bắt đầu chu kỳ chụp tự động...", slot_name)
                     self.upload_capture()
                 except Exception:
                     log.exception("Lỗi chu kỳ chụp tự động")

@@ -1,5 +1,5 @@
 {
-	"changeIndex":	186,
+	"changeIndex":	189,
 	"defaultACLAccess":	{
 		"publishClientSend":	false,
 		"publishClientReceive":	true,
@@ -37,7 +37,11 @@
 		}, {
 			"username":	"CAM-4YZ8X6",
 			"roles":	[],
-			"encoded_password":	"$7$1000$PPuoJt4e1LH5gAIPR/gHOfKah2LmGCBXGLavu24EncmQoiDGYPYwr18IoNXW50WOObLCGtEQRfez7i99RkcK4w==$cZ4kz0w1+sRZ68XW5TEdJPIlejnwtRVsBpsPOiL9cqCCdZr4CjDMxiCbx3GWJkc6CY8vvu872oM8NimH5HC+ig=="
+			"encoded_password":	"$7$1000$Uef7EMk+toB9DnZJxUyHlG9ErQczT7OK7PPP5QuwgpF7BnnHSLfQ9d+97WFvEMZAshR0fpyObfTqq2dYg/d4Og==$UXZKFPHsvDcXeFbXlNyquin2yidh6WB+czFhi2ClziJgkmsCqjVANgWP78+134lP+z2yY+jcz7lsom8hNDxv6g=="
+		}, {
+			"username":	"CAM-D2CMKS",
+			"roles":	[],
+			"encoded_password":	"$7$1000$xGt8TrbPSUU7JxmoMyejRzPFMzhaX2Dl4r2hJ0ZSLUnHU6IvMLXjdphv0AroOX5fbUmEEGqGRNguVoICFEz57g==$ZxO0EOqfwvyCLirlzI6F+ytCrBBsucLfcylyDyO7BVb5KEimC16K8Z+24KDA5rAeXU1iR5m5JqRIWRsHiAuLWA=="
 		}, {
 			"username":	"CAM-ESU9VC",
 			"roles":	[],
@@ -53,7 +57,7 @@
 		}, {
 			"username":	"CAM-LQ8JTJ",
 			"roles":	[],
-			"encoded_password":	"$7$1000$ejQILwtMTeJkreC5dbGpYH+StNnQ6qMAwOpk3eaZ50TsRjn0nhUE9q2RnZmbCXHnQagpz0fYFrf/j8nUVL5AUw==$OquDs5ZhnaesTjPfBZFueHkqJrvOu2PN+fpzBsgg1qUjipiaWhxoGxKx8l9WVqL5cG69I0RzF+PUk4Cq7UZBBw=="
+			"encoded_password":	"$7$1000$uCPmQkCNrT/51K8QoKVqGEKV+3D4bI+LIslJ5wWcDr0d8nKs8OxQYXisrEsaJAgPd3wWiFpypsYmvBq+rMy0Xw==$izEYGvWUXN5roGvsHBjjFvkqoUgJLAf0ploO6zlwS4aCntV1XcjOBTYU9ewqfj0okspNUxoUNIn2wHxZSFxSrw=="
 		}, {
 			"username":	"CAM-T6RBUV",
 			"roles":	[],
@@ -200,6 +204,8 @@
 					"username":	"CAM-47LVT7"
 				}, {
 					"username":	"CAM-4YZ8X6"
+				}, {
+					"username":	"CAM-D2CMKS"
 				}, {
 					"username":	"CAM-ESU9VC"
 				}, {
