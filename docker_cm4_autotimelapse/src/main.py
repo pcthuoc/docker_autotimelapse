@@ -301,7 +301,9 @@ class CameraAgent:
 
             elif cmd == "set_settings":
                 if not self.power_manager.is_powered:
+                    log.info("🔌 Máy ảnh đang TẮT — Tự động BẬT NGUỒN để cài đặt thông số...")
                     self.power_manager.power_on()
+                    time.sleep(self.power_manager.warmup_delay)
                 applied, caps, mismatches = self.backend.set_settings(payload)
                 resp = {"type": cmd, "request_id": rid, "status": "ok",
                         "data": {"requested": payload, "applied": applied,
