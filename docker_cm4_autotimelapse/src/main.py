@@ -422,6 +422,8 @@ class CameraAgent:
             elif cmd == "set_interval":
                 val = max(0, int(payload.get("capture_interval_sec", self.capture_interval_sec)))
                 self.capture_interval_sec = val
+                if "schedules" in payload:
+                    self.schedule_rules = payload["schedules"]
                 self.save_schedule_config()
                 log.info("⏱ Chu kỳ chụp: %d giây", val)
                 resp = {"type": cmd, "request_id": rid, "status": "ok",
