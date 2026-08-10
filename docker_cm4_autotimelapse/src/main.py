@@ -13,6 +13,7 @@ Luồng xử lý chính kết hợp:
 """
 
 import sys
+import os
 import io
 import json
 import time
