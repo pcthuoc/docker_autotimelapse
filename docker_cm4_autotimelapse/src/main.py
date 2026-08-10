@@ -135,9 +135,10 @@ class CameraAgent:
             log.warning("Không lưu được schedules.json: %s", e)
 
     def get_active_schedule_slot(self):
-        """Trả về (is_active, interval_sec, slot_name) cho thời gian hiện tại."""
-        from datetime import datetime, time as time_obj
-        now_dt = datetime.now()
+        """Trả về (is_active, interval_sec, slot_name) cho thời gian hiện tại theo MÚI GIỜ VIỆT NAM (UTC+7)."""
+        from datetime import datetime, timezone as dt_tz, timedelta, time as time_obj
+        vn_tz = dt_tz(timedelta(hours=7))
+        now_dt = datetime.now(vn_tz)
         weekday = now_dt.isoweekday()  # 1=Mon ... 7=Sun
         now_time = now_dt.time()
 
