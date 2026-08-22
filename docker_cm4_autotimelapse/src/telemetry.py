@@ -547,8 +547,8 @@ def read_ads1115_voltages(bus_id: int = 1, address: int = 0x49) -> dict:
     bat_scale = float(os.environ.get("BATTERY_VOLTAGE_SCALE", str(default_scale)))
     sol_scale = float(os.environ.get("SOLAR_VOLTAGE_SCALE", str(default_scale)))
 
-    sol_channel = int(os.environ.get("ADS1115_SOLAR_CHANNEL", "0"))    # Kênh 0 = A0
-    bat_channel = int(os.environ.get("ADS1115_BATTERY_CHANNEL", "3"))  # Kênh 3 = A3 (Kênh 4)
+    sol_channel = int(os.environ.get("ADS1115_SOLAR_CHANNEL", "2"))    # Kênh 3 (Chân A2 - Solar)
+    bat_channel = int(os.environ.get("ADS1115_BATTERY_CHANNEL", "3"))  # Kênh 4 (Chân A3 - Pin)
 
     def _read_channel(bus, channel: int):
         try:
