@@ -512,12 +512,27 @@ def read_sht20_sensor(bus_id: int = 1, address: int = 0x40) -> tuple:
         return None, None
 
 
+# ── FAN CONTROLLER EMC2301 ──────────────────────────────────────────────────
+_fan_controller = None
+
+def get_fan_controller(bus_id: int = 1, address: int = 0x2F):
+    """Singleton khởi tạo và quản lý EMC2301 Fan Controller."""
+    global _fan_controller
+    if _fan_controller is None:
+        try:
+            from fan_controller import EMC2301FanController
+            _fan_controller = EMC2301FanController(bus_id=bus_id, address=address)
+        except Exception as e:
+            log.warning("Không thể khởi tạo EMC2301FanController: %s", e)
+            _fan_controller = None
+    return _fan_controller
+
+
 def read_ads1115_voltages(bus_id: int = 1, address: int = 0x49) -> dict:
     """
-    Đọc điện áp Pin (A0) và Solar (A1) từ ADS1115 (0x49) trên I2C bus 1.
-    Hệ số phân áp (mạch cầu phân áp với R_dưới = 22kΩ):
-      BATTERY_VOLTAGE_SCALE: Pin Li-ion 3S (100kΩ / 22kΩ) -> mặc định 5.545
-      SOLAR_VOLTAGE_SCALE: Solar 0-24V/28V (180kΩ / 22kΩ) -> mặc định 9.182
+    Đọc điện áp Solar (A0/kênh 1) và Pin (A3/kênh 4) từ ADS1115 (0x49) trên I2C bus 1.
+    Cả 2 kênh đều sử dụng mạch cầu phân áp trở: R_dưới = 22kΩ, R_trên = 100kΩ.
+    Hệ số phân áp: (100k + 22k) / 22k = 122 / 22 = 5.54545...
     """
     try:
         import smbus2
@@ -527,14 +542,20 @@ def read_ads1115_voltages(bus_id: int = 1, address: int = 0x49) -> dict:
     if smbus2 is None:
         return {"battery_voltage": None, "solar_voltage": None}
 
-    bat_scale = float(os.environ.get("BATTERY_VOLTAGE_SCALE", "5.545"))
-    sol_scale = float(os.environ.get("SOLAR_VOLTAGE_SCALE", "9.182"))
+    # Hệ số trở chuẩn 22k / 100k
+    default_scale = round((100.0 + 22.0) / 22.0, 3)  # 5.545
+    bat_scale = float(os.environ.get("BATTERY_VOLTAGE_SCALE", str(default_scale)))
+    sol_scale = float(os.environ.get("SOLAR_VOLTAGE_SCALE", str(default_scale)))
+
+    sol_channel = int(os.environ.get("ADS1115_SOLAR_CHANNEL", "0"))    # Kênh 0 = A0
+    bat_channel = int(os.environ.get("ADS1115_BATTERY_CHANNEL", "3"))  # Kênh 3 = A3 (Kênh 4)
 
     def _read_channel(bus, channel: int):
         try:
             import time
+            channel = max(0, min(3, channel))
             mux = (0x4 + channel) << 12
-            # OS=1, MUX=100/101, PGA=001 (+/-4.096V), MODE=1 (Single-shot), DR=100 (128SPS), COMP=0003
+            # OS=1, MUX=(4+ch), PGA=001 (+/-4.096V), MODE=1 (Single-shot), DR=100 (128SPS), COMP=0003
             config = 0x8000 | mux | 0x0200 | 0x0100 | 0x0083
             write_cfg = smbus2.i2c_msg.write(address, [0x01, (config >> 8) & 0xFF, config & 0xFF])
             bus.i2c_rdwr(write_cfg)
@@ -556,11 +577,11 @@ def read_ads1115_voltages(bus_id: int = 1, address: int = 0x49) -> dict:
 
     try:
         with smbus2.SMBus(bus_id) as bus:
-            v0_pin = _read_channel(bus, 0)
-            v1_pin = _read_channel(bus, 1)
+            v_sol_pin = _read_channel(bus, sol_channel)
+            v_bat_pin = _read_channel(bus, bat_channel)
 
-            bat_v = round(v0_pin * bat_scale, 2) if v0_pin is not None else None
-            sol_v = round(v1_pin * sol_scale, 2) if v1_pin is not None else None
+            sol_v = round(v_sol_pin * sol_scale, 2) if v_sol_pin is not None else None
+            bat_v = round(v_bat_pin * bat_scale, 2) if v_bat_pin is not None else None
 
             return {
                 "battery_voltage": bat_v,
@@ -575,7 +596,7 @@ def read_ads1115_voltages(bus_id: int = 1, address: int = 0x49) -> dict:
 
 def collect_telemetry(camera_code: str, is_powered: bool, use_real_hw: bool,
                       firmware_version: str = "cm4-autotimelapse-v2.0") -> dict:
-    """Thu thập toàn bộ thông tin telemetry thực tế từ phần cứng CM4 (System + I2C sensors)."""
+    """Thu thập toàn bộ thông tin telemetry thực tế từ phần cứng CM4 (System + I2C sensors + Fan EMC2301)."""
     sim = get_sim_info()
     net = get_network_info()
     mem = get_memory_info()
@@ -587,6 +608,11 @@ def collect_telemetry(camera_code: str, is_powered: bool, use_real_hw: bool,
     i2c_bus_id = int(os.environ.get("I2C_BUS_ID", "1"))
     sht_temp, sht_humi = read_sht20_sensor(bus_id=i2c_bus_id, address=0x40)
     adc_voltages = read_ads1115_voltages(bus_id=i2c_bus_id, address=0x49)
+
+    # Điều khiển quạt thông minh EMC2301 theo nhiệt độ CPU
+    fan_addr = int(os.environ.get("EMC2301_I2C_ADDR", "0x2F"), 16) if os.environ.get("EMC2301_I2C_ADDR") else 0x2F
+    fan_ctrl = get_fan_controller(bus_id=i2c_bus_id, address=fan_addr)
+    fan_info = fan_ctrl.update_by_cpu_temp(cpu_temp) if fan_ctrl else {"fan_pwm": 0, "fan_percent": 0, "fan_rpm": 0, "fan_status": "N/A"}
 
     env_temp = sht_temp if sht_temp is not None else cpu_temp
     humidity_pct = sht_humi
@@ -618,11 +644,18 @@ def collect_telemetry(camera_code: str, is_powered: bool, use_real_hw: bool,
 
         # System resources & Environment sensors
         "temperature_c": env_temp,
+        "cpu_temperature_c": cpu_temp,
         "humidity_percent": humidity_pct,
         "cpu_percent": cpu_pct,
         "memory_used_mb": mem["used_mb"],
         "memory_percent": mem["percent"],
         "uptime_seconds": uptime_s,
+
+        # EMC2301 Fan status
+        "fan_rpm": fan_info.get("fan_rpm", 0),
+        "fan_percent": fan_info.get("fan_percent", 0),
+        "fan_pwm": fan_info.get("fan_pwm", 0),
+        "fan_status": fan_info.get("fan_status", "OFF"),
 
         # Network
         "local_ip": net["local_ip"],
@@ -639,7 +672,7 @@ def collect_telemetry(camera_code: str, is_powered: bool, use_real_hw: bool,
         "sim_signal_dbm": sim["signal_dbm"],
         "sim_signal_percent": sim["signal_percent"],
 
-        # Real I2C solar/battery telemetry
+        # Real I2C solar/battery telemetry (R_down=22k, R_up=100k)
         "battery_percent": bat_pct,
         "battery_voltage": bat_v,
         "is_charging": is_charging,
