@@ -380,12 +380,13 @@ class CameraAgent:
             if cmd in ("power_on_cm4", "power_on"):
                 self.power_manager.power_on()
                 resp = {"type": cmd, "request_id": rid, "status": "ok",
-                        "data": {"cm4_power_state": "running", "camera_power": "on"}}
+                        "data": {"cm4_power_state": "running", "camera_power": "on", "message": "CM4 is online and running"}}
+                self.publish_telemetry()
 
-            elif cmd in ("power_off_camera", "power_off"):
+            elif cmd in ("power_off_cm4", "power_off", "power_off_camera"):
                 self.power_manager.power_off()
                 resp = {"type": cmd, "request_id": rid, "status": "ok",
-                        "data": {"camera_power": "off"}}
+                        "data": {"cm4_power_state": "off", "camera_power": "off", "message": "CM4 shutdown/power-off ack"}}
 
             elif cmd == "set_settings":
                 if not self.power_manager.is_powered:
@@ -546,7 +547,7 @@ class CameraAgent:
             if rc == 0:
                 log.info("✅ MQTT Kết nối OK!")
                 client.subscribe(self.t_cmd, qos=1)
-                client.publish(self.t_status, json.dumps({"online": True}), qos=1, retain=True)
+                client.publish(self.t_status, json.dumps({"online": True, "node": "cm4", "cm4_power_state": "running"}), qos=1, retain=True)
                 self.publish_telemetry()
                 threading.Thread(
                     target=self.offline_queue.process_pending_queue,

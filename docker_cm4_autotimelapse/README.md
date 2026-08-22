@@ -79,6 +79,5 @@ docker_cm4_autotimelapse/
 
 2. **Chạy agent**:
    ```bash
-   python3 camera_wifi_agent.py --code CAM-4YZ8X6 --power-gpio 16
+   python3 camera_wifi_agent.py --code CAM-EXAMPLE --secret '<camera-password>' --power-gpio 16
    ```
-

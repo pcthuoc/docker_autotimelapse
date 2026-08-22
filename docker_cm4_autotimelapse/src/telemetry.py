@@ -461,11 +461,11 @@ def get_sim_info(force=False) -> dict:
     return info
 
 
-# ── I2C SENSORS: SHT20 (0x40) & ADS1115 (0x49) trên I2C bus 10 ─────────────────
+# ── I2C SENSORS: SHT20 (0x40) & ADS1115 (0x49) trên I2C bus 1 ───────────────────
 
-def read_sht20_sensor(bus_id: int = 10, address: int = 0x40) -> tuple:
+def read_sht20_sensor(bus_id: int = 1, address: int = 0x40) -> tuple:
     """
-    Đọc nhiệt độ (°C) và độ ẩm (%RH) từ cảm biến SHT20 ở địa chỉ 0x40 trên bus I2C 10.
+    Đọc nhiệt độ (°C) và độ ẩm (%RH) từ cảm biến SHT20 ở địa chỉ 0x40 trên bus I2C 1.
     Sử dụng raw I2C transaction (i2c_msg) tránh lỗi protocol SMBus block data.
     Trả về (temp_c, humidity_percent) hoặc (None, None) nếu không kết nối/lỗi.
     """
@@ -512,9 +512,9 @@ def read_sht20_sensor(bus_id: int = 10, address: int = 0x40) -> tuple:
         return None, None
 
 
-def read_ads1115_voltages(bus_id: int = 10, address: int = 0x49) -> dict:
+def read_ads1115_voltages(bus_id: int = 1, address: int = 0x49) -> dict:
     """
-    Đọc điện áp Pin (A0) và Solar (A1) từ ADS1115 (0x49) trên I2C bus 10.
+    Đọc điện áp Pin (A0) và Solar (A1) từ ADS1115 (0x49) trên I2C bus 1.
     Hệ số phân áp (mạch cầu phân áp với R_dưới = 22kΩ):
       BATTERY_VOLTAGE_SCALE: Pin Li-ion 3S (100kΩ / 22kΩ) -> mặc định 5.545
       SOLAR_VOLTAGE_SCALE: Solar 0-24V/28V (180kΩ / 22kΩ) -> mặc định 9.182
@@ -574,7 +574,7 @@ def read_ads1115_voltages(bus_id: int = 10, address: int = 0x49) -> dict:
 # ── TỔNG HỢP TELEMETRY ────────────────────────────────────────────────────────
 
 def collect_telemetry(camera_code: str, is_powered: bool, use_real_hw: bool,
-                      firmware_version: str = "cm4-autotimelapse-v1.0") -> dict:
+                      firmware_version: str = "cm4-autotimelapse-v2.0") -> dict:
     """Thu thập toàn bộ thông tin telemetry thực tế từ phần cứng CM4 (System + I2C sensors)."""
     sim = get_sim_info()
     net = get_network_info()
@@ -583,8 +583,8 @@ def collect_telemetry(camera_code: str, is_powered: bool, use_real_hw: bool,
     cpu_pct = get_cpu_percent()
     uptime_s = get_uptime_seconds()
 
-    # Đọc cảm biến I2C (SHT20 @ 0x40, ADS1115 @ 0x49 trên i2c-10)
-    i2c_bus_id = int(os.environ.get("I2C_BUS_ID", "10"))
+    # Đọc cảm biến I2C (SHT20 @ 0x40, ADS1115 @ 0x49 trên i2c-1)
+    i2c_bus_id = int(os.environ.get("I2C_BUS_ID", "1"))
     sht_temp, sht_humi = read_sht20_sensor(bus_id=i2c_bus_id, address=0x40)
     adc_voltages = read_ads1115_voltages(bus_id=i2c_bus_id, address=0x49)
 

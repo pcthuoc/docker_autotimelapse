@@ -8,8 +8,8 @@ AutoTimelapse CM4 Agent - Module Cấu Hình (Config)
 import os
 
 # Cấu hình Camera & MQTT Server
-CAMERA_CODE        = os.getenv("CAMERA_CODE", "CAM-4YZ8X6")
-MQTT_PASSWORD      = os.getenv("MQTT_PASSWORD", os.getenv("DEVICE_SECRET", "o2hs_IojnvqSXlF1b9M-sg"))
+CAMERA_CODE        = os.getenv("CAMERA_CODE", "")
+MQTT_PASSWORD      = os.getenv("MQTT_PASSWORD", os.getenv("DEVICE_SECRET", ""))
 MQTT_BROKER        = os.getenv("MQTT_BROKER", "mqtt.congnghetimelapse.com")
 MQTT_PORT          = int(os.getenv("MQTT_PORT", "1883"))
 SERVER_BASE        = os.getenv("SERVER_BASE", "https://cloud.congnghetimelapse.com")
@@ -19,6 +19,9 @@ POWER_GPIO_PIN     = int(os.getenv("POWER_GPIO_PIN", "16"))
 POWER_ACTIVE_HIGH  = os.getenv("POWER_ACTIVE_HIGH", "true").lower() in ("true", "1", "yes")
 WARMUP_DELAY_SEC   = float(os.getenv("WARMUP_DELAY_SEC", "10.0"))
 ALWAYS_KEEP_POWER  = os.getenv("ALWAYS_KEEP_POWER", "false").lower() in ("true", "1", "yes")
+
+# Cấu hình I2C Bus cho cảm biến (SHT20, ADS1115)
+I2C_BUS_ID         = int(os.getenv("I2C_BUS_ID", "1"))
 
 # Cấu hình Số lần Thử lại (Retry Rules)
 MAX_CAMERA_RETRIES = int(os.getenv("MAX_CAMERA_RETRIES", "3"))
