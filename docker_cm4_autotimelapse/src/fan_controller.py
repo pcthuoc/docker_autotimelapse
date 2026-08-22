@@ -33,12 +33,13 @@ class EMC2301FanController:
     """Quản lý điều khiển quạt EMC2301 qua I2C Bus."""
 
     def __init__(self, bus_id: int = 1, address: int = 0x2F,
-                 temp_off: float = 48.0, temp_mid: float = 58.0, temp_high: float = 68.0):
+                 temp_off: float = None, temp_mid: float = None, temp_high: float = None):
         self.bus_id = bus_id
         self.address = address
-        self.temp_off = temp_off      # Dưới ngưỡng này quạt tắt 0%
-        self.temp_mid = temp_mid      # Từ temp_off -> temp_mid chạy êm 40%
-        self.temp_high = temp_high    # Từ temp_mid -> temp_high chạy 70%, trên đó 100%
+        # Ngưỡng nhiệt độ CPU điều khiển quạt đọc từ Config / Env
+        self.temp_off = temp_off if temp_off is not None else float(os.getenv("FAN_TEMP_OFF", "48.0"))    # Dưới ngưỡng này quạt tắt 0%
+        self.temp_mid = temp_mid if temp_mid is not None else float(os.getenv("FAN_TEMP_MID", "55.0"))    # Từ temp_off -> temp_mid chạy êm (~40%)
+        self.temp_high = temp_high if temp_high is not None else float(os.getenv("FAN_TEMP_HIGH", "65.0"))# Từ temp_mid -> temp_high chạy (~70%), trên đó 100%
 
         self.current_pwm = 0
         self.current_rpm = 0

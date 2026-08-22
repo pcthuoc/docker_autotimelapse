@@ -29,6 +29,11 @@ ADS1115_BATTERY_CHANNEL= int(os.getenv("ADS1115_BATTERY_CHANNEL", "3"))  # Kênh
 BATTERY_VOLTAGE_SCALE  = float(os.getenv("BATTERY_VOLTAGE_SCALE", "5.545"))  # Trở 22k/100k -> (100+22)/22 = 5.545
 SOLAR_VOLTAGE_SCALE    = float(os.getenv("SOLAR_VOLTAGE_SCALE", "5.545"))    # Trở 22k/100k -> (100+22)/22 = 5.545
 
+# Cấu hình Ngưỡng Nhiệt độ CPU điều khiển Quạt EMC2301
+FAN_TEMP_OFF           = float(os.getenv("FAN_TEMP_OFF", "48.0"))    # < 48°C: Quạt TẮT (0%)
+FAN_TEMP_MID           = float(os.getenv("FAN_TEMP_MID", "55.0"))    # 48°C - 55°C: Chạy êm (40%)
+FAN_TEMP_HIGH          = float(os.getenv("FAN_TEMP_HIGH", "65.0"))   # 55°C - 65°C: Chạy vừa (70%), >= 65°C: 100%
+
 # Cấu hình Số lần Thử lại (Retry Rules)
 MAX_CAMERA_RETRIES = int(os.getenv("MAX_CAMERA_RETRIES", "3"))
 MAX_UPLOAD_RETRIES = int(os.getenv("MAX_UPLOAD_RETRIES", "3"))
