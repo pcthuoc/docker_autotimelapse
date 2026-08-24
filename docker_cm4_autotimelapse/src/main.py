@@ -922,59 +922,13 @@ class CameraAgent:
                     return
                 time.sleep(0.1)
 
-            # ── BƯỚC 4: Xử lý Chế độ Chu Kỳ EC25 ───────────────────────────
+            # ── BƯỚC 4: Xử lý Chế độ Chu Kỳ EC25 (Auto-Schedule) ─────────────
             self.operating_mode = "auto_schedule"
             is_active, interval_sec, slot_name = self.get_active_schedule_slot()
 
-            log.info("⏰ [CYCLE-EC25] Khởi động theo chu kỳ EC25. Lịch hiện tại: [%s] active=%s, interval=%ds",
+            log.info("⏰ [CYCLE-EC25] Khởi động theo chu kỳ. Lịch hiện tại: [%s] active=%s, interval=%ds (capture_loop sẽ chụp đúng mốc phút chẵn)",
                      slot_name, is_active, interval_sec)
-
-            # ── BƯỚC 5: Kiểm tra missed_capture_flag ─────────────────────────
-            # Nếu flag=True: CM4 đã bật lên nhưng chưa kịp chụp ở lần trước
-            # (boot chậm, qua mốc, hoặc lỗi giữa chừng) → chụp ngay bất kể mốc
-            if self.missed_capture_flag:
-                log.info("🚨 [MISSED-CAPTURE] Phát hiện missed_capture_flag=True → Chụp ngay không chờ mốc!")
-                if is_active:
-                    try:
-                        self.upload_capture(triggered_by="schedule")
-                        self.publish_telemetry()
-                    except Exception as e:
-                        log.error("Lỗi chụp bù missed: %s", e)
-                else:
-                    log.info("⏸ [MISSED-CAPTURE] Ngoài khung giờ → Bỏ qua dù có missed flag.")
-                    self._set_missed_capture_flag(False, "ngoài khung giờ")
-                    self.publish_telemetry()
-
-            elif is_active:
-                # ── BƯỚC 6a: Đang trong khung giờ, kiểm tra có cần chụp ngay không ──
-                # Dùng tolerance rộng hơn (5 phút = 300s) để bắt trường hợp boot chậm
-                on_slot = self.is_on_aligned_slot(interval_sec, tolerance_sec=300)
-                if on_slot:
-                    log.info("🔔 [CYCLE-EC25] Đang tại mốc chu kỳ (tolerance 5 phút) → Chụp ngay!")
-                    try:
-                        self.upload_capture(triggered_by="schedule")
-                        self.publish_telemetry()
-                    except Exception as e:
-                        log.error("Lỗi chụp định kỳ: %s", e)
-                else:
-                    log.info("⏸ [CYCLE-EC25] Trong khung giờ nhưng chưa đến mốc chụp → capture_loop sẽ xử lý.")
-                    self.publish_telemetry()
-            else:
-                log.info("⏸ [CYCLE-EC25] Ngoài khung giờ chụp định kỳ → Bỏ qua chụp ảnh.")
-                self.publish_telemetry()
-
-            # ── BƯỚC 7: Kiểm tra lại nếu người dùng can thiệp trong lúc chụp ──
-            if self.operating_mode == "interactive":
-                log.info("🎮 [FORCE-ON] Người dùng can thiệp từ Web trong lúc chụp → Giữ Online liên tục.")
-                self._save_ec25_state(force_power_on=True)
-                return
-
-            # ── BƯỚC 8: Tắt nguồn an toàn sau khi hoàn thành chu kỳ EC25 ────
-            if self.auto_shutdown_after_capture:
-                log.info("🌙 [AUTO SHUTDOWN] Hoàn thành chu kỳ EC25. Tắt hệ điều hành CM4 để EC25 ngắt nguồn...")
-                self.shutdown_host_cm4()
-            else:
-                log.info("⚡ [CYCLE-EC25] CM4 duy trì hoạt động daemon (auto_shutdown=False).")
+            self.publish_telemetry()
 
         threading.Thread(target=_smart_boot_task, name="smart_boot_manager", daemon=True).start()
 
