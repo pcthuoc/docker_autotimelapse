@@ -36,10 +36,10 @@ class EMC2301FanController:
                  temp_off: float = None, temp_mid: float = None, temp_high: float = None):
         self.bus_id = bus_id
         self.address = address
-        # Ngưỡng nhiệt độ CPU điều khiển quạt đọc từ Config / Env
-        self.temp_off = temp_off if temp_off is not None else float(os.getenv("FAN_TEMP_OFF", "48.0"))    # Dưới ngưỡng này quạt tắt 0%
-        self.temp_mid = temp_mid if temp_mid is not None else float(os.getenv("FAN_TEMP_MID", "55.0"))    # Từ temp_off -> temp_mid chạy êm (~40%)
-        self.temp_high = temp_high if temp_high is not None else float(os.getenv("FAN_TEMP_HIGH", "65.0"))# Từ temp_mid -> temp_high chạy (~70%), trên đó 100%
+        # Ngưỡng nhiệt độ CPU điều khiển quạt đọc từ Config / Env (15°C để test quạt)
+        self.temp_off = temp_off if temp_off is not None else float(os.getenv("FAN_TEMP_OFF", "15.0"))    # Dưới ngưỡng này quạt tắt 0%
+        self.temp_mid = temp_mid if temp_mid is not None else float(os.getenv("FAN_TEMP_MID", "25.0"))    # Từ temp_off -> temp_mid chạy êm (~40%)
+        self.temp_high = temp_high if temp_high is not None else float(os.getenv("FAN_TEMP_HIGH", "35.0"))# Từ temp_mid -> temp_high chạy (~70%), trên đó 100%
 
         self.current_pwm = 0
         self.current_rpm = 0
