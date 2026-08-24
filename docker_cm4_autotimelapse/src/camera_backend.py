@@ -98,8 +98,7 @@ class HybridCameraBackend:
 
                     # Phân biệt loại lỗi để xử lý đúng
                     is_timing_error = "[-105]" in err_str or "Unknown model" in err_str
-                    is_not_found = "[-52]" in err_str or "not found" in err_str.lower()
-                    is_io_error = any(x in err_str for x in ["[-7]", "[-60]", "I/O"])
+                    is_io_error = any(x in err_str for x in ["[-7]", "[-60]", "[-52]", "I/O", "not found", "Not found"])
 
                     if is_timing_error:
                         # Máy ảnh đang boot, USB detect rồi nhưng chưa enum xong — CHỜ THÊM
@@ -107,21 +106,14 @@ class HybridCameraBackend:
                                  attempt, max_attempts)
                         time.sleep(2.0)
 
-                    elif is_not_found:
-                        # Không tìm thấy thiết bị USB nào — thử tối đa 2 lần rồi chuyển ngay giả lập
-                        if attempt >= 2:
-                            log.info("ℹ️ Không tìm thấy máy ảnh USB gphoto2 ([-52]) — Chuyển sang Giả Lập Ảnh (PIL).")
-                            break
-                        time.sleep(1.0)
-
                     elif is_io_error:
-                        # Lỗi USB thật (device bị lock/treo) → reset USB
-                        log.warning("⚠️ [USB ERROR] Lỗi cổng USB (lần %d/%d): %s — Reset USB...",
-                                    attempt, MAX_CAMERA_RETRIES, e)
-                        if attempt < MAX_CAMERA_RETRIES:
+                        # Lỗi USB thật (device bị lock/treo/chưa nhận kịp) → reset USB sau một số lần thử
+                        log.info("⏳ [CAMERA BOOT] Máy ảnh đang khởi động (lần %d/%d), chờ thêm 2s...",
+                                 attempt, max_attempts)
+                        time.sleep(2.0)
+                        if attempt == 5:
                             reset_all_camera_usb_devices()
-                            time.sleep(1.5)
-                        if attempt == MAX_CAMERA_RETRIES:
+                        elif attempt == 8:
                             log.warning("🔌 USB kẹt nặng → Hard Power Cycle GPIO 16...")
                             self.power_manager.hard_cycle_power()
                             time.sleep(2.0)
