@@ -674,7 +674,8 @@ class CameraAgent:
 
             elif cmd == "stop_live_view":
                 self.live_session_id = None
-                if not self.always_keep_power and self.capture_interval_sec == 0:
+                if not self.always_keep_power:
+                    self.backend.disconnect_real_camera()
                     self.power_manager.power_off()
                 resp = {"type": cmd, "request_id": rid, "status": "ok",
                         "data": {"live_view": False}}
@@ -872,12 +873,12 @@ class CameraAgent:
             sync_ok, force_on = self.pull_server_config()
 
             # ── BƯỚC 2: Phát hiện chế độ CƯỠNG BỨC BẬT ─────────────────────
-            # Ưu tiên cao nhất: server nói force_on=True → giữ online hoàn toàn
+            # Ưu tiên cao nhất: server nói force_on=True → giữ CM4 online hoàn toàn
+            # (LƯU Ý: Nguồn máy ảnh GPIO 16 vẫn giữ TẮT, chỉ BẬT khi chụp, liveview, hoặc chỉnh thông số)
             if force_on:
                 self.operating_mode = "interactive"
-                self.power_manager.power_on()
-                log.info("🎮 [FORCE-ON] Phát hiện CƯỠNG BỨC BẬT từ Server (force_power_on=True) → CM4 GIỮ ONLINE LIÊN TỤC.")
-                # Xoá missed_capture_flag vì chế độ interactive không tính chu kỳ
+                log.info("🎮 [FORCE-ON] Phát hiện CƯỠNG BỨC BẬT từ Server (force_power_on=True) → CM4 GIỮ ONLINE LIÊN TỤC (Máy ảnh giữ TẮT chờ lệnh).")
+                # Xoá missed_capture_flag vì chế độ interactive do người dùng trực tiếp điều khiển
                 if self.missed_capture_flag:
                     self._set_missed_capture_flag(False, "chế độ cưỡng bức, không áp dụng chu kỳ")
                 # Cập nhật EC25 state: force_on=True để EC25 biết không được cắt nguồn
