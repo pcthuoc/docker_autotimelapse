@@ -189,6 +189,17 @@ class HybridCameraBackend:
                 except Exception as e:
                     log.debug("USB reset không cần thiết: %s", e)
 
+    def _find_widget(self, config, candidate_names):
+        """Tìm widget đầu tiên tồn tại trong danh sách tên ứng viên (hỗ trợ cả Canon, Nikon, Sony)."""
+        if isinstance(candidate_names, str):
+            candidate_names = [candidate_names]
+        for name in candidate_names:
+            try:
+                return config.get_child_by_name(name), name
+            except Exception:
+                continue
+        return None, None
+
     def get_settings(self):
         if GPHOTO2_AVAILABLE and not self.use_real_hardware:
             self._try_init_real_camera()
@@ -199,20 +210,22 @@ class HybridCameraBackend:
                     config = self._camera.get_config()
                     applied = {}
                     capabilities = {}
-                    for field, (widget_name, settable) in SETTING_SPECS.items():
-                        try:
-                            widget = config.get_child_by_name(widget_name)
-                            val = str(widget.get_value())
-                            applied[field] = val
-                            wtype = widget.get_type()
-                            choices = [str(widget.get_choice(i)) for i in range(widget.count_choices())] if wtype in (5, 6) else []
-                            capabilities[field] = {
-                                "writable": settable and not bool(widget.get_readonly()),
-                                "current": val,
-                                "choices": choices,
-                            }
-                        except Exception:
-                            pass
+                    for field, (candidates, settable) in SETTING_SPECS.items():
+                        widget, matched_name = self._find_widget(config, candidates)
+                        if widget is not None:
+                            try:
+                                val = str(widget.get_value())
+                                applied[field] = val
+                                wtype = widget.get_type()
+                                choices = [str(widget.get_choice(i)) for i in range(widget.count_choices())] if wtype in (5, 6) else []
+                                capabilities[field] = {
+                                    "writable": settable and not bool(widget.get_readonly()),
+                                    "current": val,
+                                    "choices": choices,
+                                    "widget_name": matched_name,
+                                }
+                            except Exception:
+                                pass
                     return applied, capabilities
                 except Exception as e:
                     log.warning("Lỗi đọc cấu hình máy ảnh thật (%s) — Tái kết nối...", e)
@@ -242,22 +255,27 @@ class HybridCameraBackend:
                 try:
                     config = self._camera.get_config()
                     failed_widgets = []
+                    success_count = 0
                     for field, val in requested.items():
                         if field in SETTING_SPECS and SETTING_SPECS[field][1]:
-                            widget_name = SETTING_SPECS[field][0]
-                            try:
-                                widget = config.get_child_by_name(widget_name)
-                                if not widget.get_readonly():
-                                    widget.set_value(str(val))
-                                else:
-                                    log.debug("Widget %s là read-only, bỏ qua", widget_name)
-                            except Exception as e:
-                                failed_widgets.append(f"{field}({widget_name}): {e}")
+                            candidates = SETTING_SPECS[field][0]
+                            widget, matched_name = self._find_widget(config, candidates)
+                            if widget is not None:
+                                try:
+                                    if not widget.get_readonly():
+                                        widget.set_value(str(val))
+                                        success_count += 1
+                                    else:
+                                        log.debug("Widget %s (%s) là read-only, bỏ qua", field, matched_name)
+                                except Exception as e:
+                                    failed_widgets.append(f"{field}({matched_name}): {e}")
+                            else:
+                                log.debug("Không tìm thấy widget tương thích cho %s trong %s", field, candidates)
                     self._camera.set_config(config)
                     if failed_widgets:
                         log.warning("⚠️ set_settings — một số widget lỗi: %s", "; ".join(failed_widgets))
                     else:
-                        log.info("✅ set_settings — Đã ghi %d thông số lên máy ảnh thật", len(requested))
+                        log.info("✅ set_settings — Đã ghi %d thông số lên máy ảnh thật", success_count)
                 except Exception as e:
                     log.warning("Không thể ghi cấu hình lên máy ảnh thật: %s", e)
 

@@ -24,6 +24,7 @@ services:
       - /dev:/dev
       - /sys:/sys
       - /run/udev:/run/udev:ro
+      - /var/run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket
     env_file:
       - .env
     environment:
@@ -36,6 +37,9 @@ services:
       - POWER_ACTIVE_HIGH=${POWER_ACTIVE_HIGH:-true}
       - WARMUP_DELAY_SEC=${WARMUP_DELAY_SEC:-3.0}
       - ALWAYS_KEEP_POWER=${ALWAYS_KEEP_POWER:-false}
+      - AUTO_SHUTDOWN_AFTER_CAPTURE=${AUTO_SHUTDOWN_AFTER_CAPTURE:-false}
+      - AUTO_CAPTURE_ON_BOOT=${AUTO_CAPTURE_ON_BOOT:-false}
+      - SHUTDOWN_DELAY_SEC=${SHUTDOWN_DELAY_SEC:-3.0}
       - TELEMETRY_INTERVAL=${TELEMETRY_INTERVAL:-30}
       - OFFLINE_QUEUE_DIR=${OFFLINE_QUEUE_DIR:-/app/offline_queue}
       - OFFLINE_RETRY_INTERVAL=${OFFLINE_RETRY_INTERVAL:-60}

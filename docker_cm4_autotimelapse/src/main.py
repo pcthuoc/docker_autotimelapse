@@ -32,7 +32,9 @@ from config import (
     CAMERA_CODE, MQTT_PASSWORD, MQTT_BROKER, MQTT_PORT, SERVER_BASE,
     POWER_GPIO_PIN, POWER_ACTIVE_HIGH, WARMUP_DELAY_SEC, ALWAYS_KEEP_POWER,
     TELEMETRY_INTERVAL, OFFLINE_QUEUE_DIR, OFFLINE_RETRY_INTERVAL,
-    MAX_UPLOAD_RETRIES, UPLOAD_RETRY_DELAY, SIM_INFO_TELEMETRY
+    MAX_UPLOAD_RETRIES, UPLOAD_RETRY_DELAY, SIM_INFO_TELEMETRY,
+    AUTO_SHUTDOWN_AFTER_CAPTURE, AUTO_CAPTURE_ON_BOOT, SHUTDOWN_DELAY_SEC,
+    EC25_STATE_FILE
 )
 from power_manager import CameraPowerManager
 from offline_queue import OfflineQueueManager
@@ -63,7 +65,10 @@ class CameraAgent:
     def __init__(self, code, password, broker, port, server_base,
                  power_pin=16, power_active_high=True, warmup_delay=3.0,
                  always_keep_power=False, telemetry_interval=30,
-                 offline_dir="/app/offline_queue", offline_retry_interval=60):
+                 offline_dir="/app/offline_queue", offline_retry_interval=60,
+                 auto_shutdown=AUTO_SHUTDOWN_AFTER_CAPTURE,
+                 auto_capture_boot=AUTO_CAPTURE_ON_BOOT,
+                 shutdown_delay=SHUTDOWN_DELAY_SEC):
         self.code = code
         self.password = password
         self.broker = broker
@@ -72,6 +77,9 @@ class CameraAgent:
         self.always_keep_power = always_keep_power
         self.telemetry_interval = telemetry_interval
         self.offline_retry_interval = offline_retry_interval
+        self.auto_shutdown_after_capture = auto_shutdown
+        self.auto_capture_on_boot = auto_capture_boot
+        self.shutdown_delay_sec = shutdown_delay
 
         self.power_manager = CameraPowerManager(
             pin=power_pin, active_high=power_active_high, warmup_delay=warmup_delay
@@ -93,12 +101,68 @@ class CameraAgent:
         self.work_end_time = "18:00"
         self.schedule_rules = []
 
+        # ── Trạng thái đồng bộ Cưỡng Bức vs. Chu Kỳ ──────────────────────────
+        # missed_capture_flag: True khi đã đến mốc chụp nhưng CM4 chưa chụp được
+        # (ví dụ: boot chậm, qua mốc, hoặc giữa các chu kỳ sleep).
+        # Được persist ra disk để sống sót qua reboot.
+        self.missed_capture_flag = False
+        self._load_ec25_state()
+
         self.t_cmd    = f"camera/{self.code}/cmd"
         self.t_ack    = f"camera/{self.code}/ack"
         self.t_data   = f"camera/{self.code}/data"
         self.t_status = f"camera/{self.code}/status"
 
         self.load_schedule_config()
+
+    # ── EC25 State File (đồng bộ Cưỡng Bức vs. Chu Kỳ) ──────────────────────
+
+    def _load_ec25_state(self):
+        """Đọc trạng thái EC25 từ disk (missed_capture_flag, last_capture_ts)."""
+        try:
+            if os.path.exists(EC25_STATE_FILE):
+                with open(EC25_STATE_FILE, "r", encoding="utf-8") as f:
+                    state = json.load(f)
+                self.missed_capture_flag = bool(state.get("missed_capture_flag", False))
+                log.info("📂 [EC25 STATE] Đã đọc state từ disk: missed_capture=%s",
+                         self.missed_capture_flag)
+        except Exception as e:
+            log.warning("⚠️ Không đọc được ec25_state.json: %s", e)
+            self.missed_capture_flag = False
+
+    def _save_ec25_state(self, **kwargs):
+        """Lưu trạng thái EC25 xuống disk, merge với state hiện có."""
+        try:
+            # Đọc state cũ nếu có để merge (EC25 cũng ghi vào file này)
+            state = {}
+            if os.path.exists(EC25_STATE_FILE):
+                try:
+                    with open(EC25_STATE_FILE, "r", encoding="utf-8") as f:
+                        state = json.load(f)
+                except Exception:
+                    pass
+
+            # Cập nhật các key được truyền vào
+            state.update(kwargs)
+
+            # Luôn đồng bộ missed_capture_flag hiện tại
+            state["missed_capture_flag"] = self.missed_capture_flag
+            state["last_updated_by"] = "cm4_agent"
+            state["last_updated_ts"] = datetime.now(timezone.utc).isoformat()
+
+            os.makedirs(os.path.dirname(EC25_STATE_FILE), exist_ok=True)
+            with open(EC25_STATE_FILE, "w", encoding="utf-8") as f:
+                json.dump(state, f, indent=2)
+        except Exception as e:
+            log.warning("⚠️ Không lưu được ec25_state.json: %s", e)
+
+    def _set_missed_capture_flag(self, value: bool, reason: str = ""):
+        """Set missed_capture_flag và đồng bộ ngay xuống disk."""
+        self.missed_capture_flag = value
+        flag_str = "SET" if value else "CLEAR"
+        log.info("🏳 [FLAG:%s] missed_capture_flag=%s%s",
+                 flag_str, value, f" ({reason})" if reason else "")
+        self._save_ec25_state()
 
     def load_schedule_config(self):
         """Đọc cấu hình lịch chụp từ ổ đĩa đệm (/app/offline_queue/schedules.json)."""
@@ -180,7 +244,90 @@ class CameraAgent:
             return True, self.capture_interval_sec, "Mặc định"
         return False, 0, None
 
+    def get_seconds_to_next_aligned_slot(self, interval_sec):
+        """Tính số giây cần chờ đến mốc chụp chẵn kế tiếp tính từ phút 00 của mỗi giờ (theo UTC+7).
+        Ví dụ:
+          - interval = 300s (5 phút)  -> các mốc :00, :05, :10, :15, :20, :25, :30...
+          - interval = 600s (10 phút) -> :00, :10, :20, :30, :40, :50
+          - interval = 900s (15 phút) -> :00, :15, :30, :45
+          - interval = 1200s (20 phút) -> :00, :20, :40
+          - interval = 1800s (30 phút) -> :00, :30
+          - interval = 3600s (60 phút) -> :00
+        """
+        if interval_sec <= 0:
+            return 300
+        from datetime import datetime, timezone as dt_tz, timedelta
+        vn_tz = dt_tz(timedelta(hours=7))
+        now = datetime.now(vn_tz)
+        current_second_in_hour = now.minute * 60 + now.second + (now.microsecond / 1000000.0)
+
+        if interval_sec <= 3600:
+            rem = current_second_in_hour % interval_sec
+            wait_sec = interval_sec - rem
+            if wait_sec < 1.0:
+                wait_sec += interval_sec
+            return max(1.0, wait_sec)
+        else:
+            current_sec_in_day = now.hour * 3600 + now.minute * 60 + now.second
+            rem = current_sec_in_day % interval_sec
+            wait_sec = interval_sec - rem
+            if wait_sec < 1.0:
+                wait_sec += interval_sec
+            return max(1.0, wait_sec)
+
+    def is_on_aligned_slot(self, interval_sec, tolerance_sec=180):
+        """Kiểm tra thời điểm hiện tại có nằm trong cửa sổ mốc chu kỳ chẵn hay không."""
+        if interval_sec <= 0:
+            return True
+        from datetime import datetime, timezone as dt_tz, timedelta
+        vn_tz = dt_tz(timedelta(hours=7))
+        now = datetime.now(vn_tz)
+        if interval_sec <= 3600:
+            sec_in_period = now.minute * 60 + now.second
+        else:
+            sec_in_period = now.hour * 3600 + now.minute * 60 + now.second
+
+        rem = sec_in_period % interval_sec
+        return rem <= tolerance_sec or (interval_sec - rem) <= 15
+
     # ── HTTP Helpers ──────────────────────────────────────────────────────────
+
+    def _http_get_json(self, path):
+        req = urllib.request.Request(
+            self.server_base + path, method="GET",
+            headers={
+                "X-Device-Key": self.code,
+                "X-Device-Secret": self.password,
+                "User-Agent": USER_AGENT,
+            },
+        )
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return r.status, json.loads(r.read().decode() or "{}")
+
+    def pull_server_config(self):
+        """Pulls latest configuration, schedules, and force_power_on status from Backend."""
+        try:
+            st, data = self._http_get_json("/api/device/config/")
+            if st == 200 and data.get("ok"):
+                if "capture_interval_sec" in data:
+                    self.capture_interval_sec = int(data["capture_interval_sec"])
+                if "schedule_enabled" in data:
+                    self.schedule_enabled = bool(data["schedule_enabled"])
+                if "work_start_time" in data:
+                    self.work_start_time = str(data["work_start_time"])
+                if "work_end_time" in data:
+                    self.work_end_time = str(data["work_end_time"])
+                if "schedules" in data:
+                    self.schedule_rules = data["schedules"]
+
+                self.save_schedule_config()
+                force_on = bool(data.get("force_power_on", False))
+                log.info("📥 [CONFIG SYNC] Kéo thành công từ Server: interval=%ds, force_power_on=%s, %d lịch",
+                         self.capture_interval_sec, force_on, len(self.schedule_rules))
+                return True, force_on
+        except Exception as e:
+            log.warning("⚠️ Không thể kéo cấu hình từ Server (%s), dùng cấu hình local.", e)
+        return False, False
 
     def _http_post_json(self, path, obj):
         body = json.dumps(obj).encode()
@@ -262,9 +409,12 @@ class CameraAgent:
             log.warning("Upload thất bại: %s", exc)
             return False, None
 
-    def upload_capture(self):
+    def upload_capture(self, triggered_by: str = "schedule"):
         """Thực hiện chu trình chụp đầy đủ:
         GPIO ON → Capture → Retry 3x upload → Offline Queue → Power Management.
+
+        Args:
+            triggered_by: "schedule" (chu kỳ EC25) hoặc "force_on" (cưỡng bức) hoặc "mqtt" (lệnh thủ công).
         """
         self.power_manager.power_on()
 
@@ -312,6 +462,37 @@ class CameraAgent:
                 media_ids.append(media_id)
             else:
                 self.offline_queue.save_pending_capture(final_bytes, thumb, metadata)
+
+        # ── Sau khi chụp xong: xoá missed_capture_flag và thông báo cho EC25 ──
+        if self.missed_capture_flag:
+            self._set_missed_capture_flag(False, f"chụp xong (triggered_by={triggered_by})")
+
+        # Lưu timestamp chụp gần nhất và trạng thái để EC25 đồng bộ
+        self._save_ec25_state(
+            last_capture_ts=taken_at,
+            last_capture_triggered_by=triggered_by,
+            capture_success=bool(captured_files),
+        )
+
+        # Publish MQTT thông báo EC25 biết CM4 đã hoàn thành chu kỳ chụp
+        if triggered_by == "schedule" and self.mqtt_client and self.mqtt_client.is_connected():
+            try:
+                self.mqtt_client.publish(
+                    self.t_status,
+                    json.dumps({
+                        "online": True,
+                        "node": "cm4",
+                        "event": "cycle_capture_done",
+                        "triggered_by": triggered_by,
+                        "taken_at": taken_at,
+                        "media_count": len(media_ids),
+                    }),
+                    qos=1,
+                    retain=False,
+                )
+                log.info("📡 [CYCLE-EC25] Đã publish cycle_capture_done → EC25 nhận tín hiệu.")
+            except Exception as e:
+                log.warning("Không publish cycle_capture_done: %s", e)
 
         if not self.live_session_id and not self.always_keep_power:
             if self.capture_interval_sec == 0 or self.capture_interval_sec > 15:
@@ -370,6 +551,41 @@ class CameraAgent:
         except Exception as e:
             log.warning("Lỗi publish Telemetry: %s", e)
 
+    def shutdown_host_cm4(self, delay=None):
+        """Tắt nguồn toàn bộ hệ điều hành Host CM4 an toàn từ bên trong Docker Container."""
+        delay = delay if delay is not None else self.shutdown_delay_sec
+        log.info("🔌 [HOST POWEROFF] Đang chuẩn bị tắt nguồn hệ điều hành CM4 sau %.1fs...", delay)
+
+        def _do_shutdown():
+            time.sleep(delay)
+            log.info("🔌 [HOST POWEROFF] Đang thực hiện tắt máy an toàn (sync + SysRq poweroff)...")
+            try:
+                # 1. Flush disk buffers
+                os.system("sync")
+                time.sleep(1)
+
+                # 2. Kernel Magic SysRq (Sync -> Remount ReadOnly -> Poweroff)
+                try:
+                    if os.path.exists("/proc/sysrq-trigger"):
+                        with open("/proc/sysrq-trigger", "w") as f:
+                            f.write("s")
+                        time.sleep(0.5)
+                        with open("/proc/sysrq-trigger", "w") as f:
+                            f.write("u")
+                        time.sleep(0.5)
+                        with open("/proc/sysrq-trigger", "w") as f:
+                            f.write("o")
+                except Exception as e:
+                    log.warning("SysRq trigger error: %s", e)
+
+                # 3. Fallback qua D-Bus / standard poweroff
+                os.system('dbus-send --system --print-reply --dest=org.freedesktop.login1 /org/freedesktop/login1 "org.freedesktop.login1.Manager.PowerOff" boolean:true 2>/dev/null')
+                os.system("poweroff 2>/dev/null || shutdown -h now 2>/dev/null")
+            except Exception as exc:
+                log.error("Lỗi shutdown host: %s", exc)
+
+        threading.Thread(target=_do_shutdown, name="host_shutdown_thread", daemon=True).start()
+
     def process_command(self, req):
         cmd     = req.get("command", "")
         rid     = req.get("request_id", "")
@@ -377,16 +593,25 @@ class CameraAgent:
         log.info("📥 Nhận lệnh MQTT: %s (req_id=%s)", cmd, rid)
 
         try:
-            if cmd in ("power_on_cm4", "power_on"):
+            if cmd in ("power_on_cm4", "power_on", "set_interactive_mode"):
+                self.operating_mode = "interactive"
                 self.power_manager.power_on()
                 resp = {"type": cmd, "request_id": rid, "status": "ok",
-                        "data": {"cm4_power_state": "running", "camera_power": "on", "message": "CM4 is online and running"}}
+                        "data": {"cm4_power_state": "running", "mode": "interactive", "camera_power": "on", "message": "CM4 is online and running in interactive mode"}}
+                log.info("🎮 [MODE] Nhận lệnh %s từ Web UI -> Kích hoạt Chế độ Tương Tác (Bỏ qua Auto-Shutdown)", cmd)
                 self.publish_telemetry()
 
-            elif cmd in ("power_off_cm4", "power_off", "power_off_camera"):
+            elif cmd in ("power_off_cm4", "power_off", "shutdown_cm4", "shutdown_host"):
                 self.power_manager.power_off()
                 resp = {"type": cmd, "request_id": rid, "status": "ok",
-                        "data": {"cm4_power_state": "off", "camera_power": "off", "message": "CM4 shutdown/power-off ack"}}
+                        "data": {"cm4_power_state": "shutting_down", "camera_power": "off", "message": "CM4 shutdown in progress"}}
+                log.info("🔴 [SHUTDOWN] Nhận lệnh tắt nguồn từ Web UI -> Đang tắt hệ điều hành CM4...")
+                self.shutdown_host_cm4(delay=2.0)
+
+            elif cmd == "power_off_camera":
+                self.power_manager.power_off()
+                resp = {"type": cmd, "request_id": rid, "status": "ok",
+                        "data": {"camera_power": "off", "message": "Camera powered off"}}
 
             elif cmd == "set_settings":
                 if not self.power_manager.is_powered:
@@ -412,7 +637,7 @@ class CameraAgent:
                         "data": {"sim": sim}}
 
             elif cmd in ("capture_now", "capture"):
-                media_ids = self.upload_capture()
+                media_ids = self.upload_capture(triggered_by="mqtt")
                 if media_ids:
                     resp = {"type": cmd, "request_id": rid, "status": "ok",
                             "data": {"media_id": media_ids[0], "media_ids": media_ids}}
@@ -500,9 +725,16 @@ class CameraAgent:
                     time.sleep(1)
                 continue
 
-            log.info("⏱ [%s] Chụp kế tiếp sau %d giây", slot_name, interval_sec)
+            wait_sec = self.get_seconds_to_next_aligned_slot(interval_sec)
+            log.info("⏱ [%s] Chụp kế tiếp sau %.0f giây (chu kỳ %ds, căn chuẩn mốc phút chẵn)", slot_name, wait_sec, interval_sec)
+
+            # ── Set missed_capture_flag trước khi bắt đầu chờ ────────────────
+            # Nếu CM4 tắt/reboot trong lúc sleep này và bật lại,
+            # smart_boot_task sẽ đọc flag=True và chụp ngay thay vì chờ mốc tiếp.
+            self._set_missed_capture_flag(True, f"bắt đầu chờ mốc {slot_name} (wait={wait_sec:.0f}s)")
+
             elapsed = 0
-            while elapsed < interval_sec and self.running:
+            while elapsed < wait_sec and self.running:
                 self.watchdog.touch("capture_loop")
                 time.sleep(1)
                 elapsed += 1
@@ -513,10 +745,15 @@ class CameraAgent:
             curr_active, _, _ = self.get_active_schedule_slot()
             if self.running and curr_active:
                 try:
-                    log.info("🔔 [%s] Bắt đầu chu kỳ chụp tự động...", slot_name)
-                    self.upload_capture()
+                    log.info("🔔 [%s] Bắt đầu chu kỳ chụp tự động (mốc phút chẵn)...", slot_name)
+                    # missed_capture_flag sẽ được xoá bên trong upload_capture()
+                    self.upload_capture(triggered_by="schedule")
+                    if self.auto_shutdown_after_capture and self.operating_mode != "interactive":
+                        self.publish_telemetry()
+                        self.shutdown_host_cm4()
                 except Exception:
                     log.exception("Lỗi chu kỳ chụp tự động")
+                    # Nếu lỗi, giữ nguyên flag=True để lần boot sau biết bị missed
 
     def _fn_offline_retry(self):
         while self.running:
@@ -601,6 +838,8 @@ class CameraAgent:
         log.info("🔁 Upload Retry %dx delay %.1fs | Offline Retry %ds",
                  MAX_UPLOAD_RETRIES, UPLOAD_RETRY_DELAY, self.offline_retry_interval)
         log.info("📁 Offline Queue: %s", self.offline_queue.queue_dir)
+        log.info("🔋 Power Save Mode: Auto-Boot-Capture=%s | Auto-Shutdown=%s (delay=%.1fs)",
+                 self.auto_capture_on_boot, self.auto_shutdown_after_capture, self.shutdown_delay_sec)
         log.info("=" * 60)
 
         self.watchdog.register(ManagedThread(
@@ -622,6 +861,100 @@ class CameraAgent:
 
         self.watchdog.start(lambda: self.running)
         self._setup_mqtt()
+
+        # ── Smart Boot Manager (Tự động nhận diện Chụp Định Kỳ EC25 vs Cưỡng Bức Bật Web UI) ──
+        self.operating_mode = "pending"  # "pending" | "interactive" | "auto_schedule"
+
+        def _smart_boot_task():
+            log.info("⏳ [SMART BOOT] CM4 khởi động: Đang đồng bộ cấu hình từ Server & kiểm tra trạng thái...")
+
+            # ── BƯỚC 1: Kéo cấu hình và trạng thái force_power_on từ Server ──
+            sync_ok, force_on = self.pull_server_config()
+
+            # ── BƯỚC 2: Phát hiện chế độ CƯỠNG BỨC BẬT ─────────────────────
+            # Ưu tiên cao nhất: server nói force_on=True → giữ online hoàn toàn
+            if force_on:
+                self.operating_mode = "interactive"
+                self.power_manager.power_on()
+                log.info("🎮 [FORCE-ON] Phát hiện CƯỠNG BỨC BẬT từ Server (force_power_on=True) → CM4 GIỮ ONLINE LIÊN TỤC.")
+                # Xoá missed_capture_flag vì chế độ interactive không tính chu kỳ
+                if self.missed_capture_flag:
+                    self._set_missed_capture_flag(False, "chế độ cưỡng bức, không áp dụng chu kỳ")
+                # Cập nhật EC25 state: force_on=True để EC25 biết không được cắt nguồn
+                self._save_ec25_state(force_power_on=True)
+                self.publish_telemetry()
+                return
+
+            # Server xác nhận KHÔNG cưỡng bức → cập nhật EC25 state
+            self._save_ec25_state(force_power_on=False)
+
+            # ── BƯỚC 3: Chờ ngắn để nhận lệnh MQTT tức thì nếu có ────────────
+            # (3 giây – đủ nhận lệnh power_on_cm4 từ Web UI gửi ngay khi detect CM4 online)
+            for _ in range(30):
+                if not self.running:
+                    return
+                if self.operating_mode == "interactive":
+                    log.info("🎮 [FORCE-ON] Nhận lệnh tương tác qua MQTT khi khởi động → CM4 GIỮ ONLINE.")
+                    # Cập nhật EC25 state: force_on=True
+                    self._save_ec25_state(force_power_on=True)
+                    return
+                time.sleep(0.1)
+
+            # ── BƯỚC 4: Xử lý Chế độ Chu Kỳ EC25 ───────────────────────────
+            self.operating_mode = "auto_schedule"
+            is_active, interval_sec, slot_name = self.get_active_schedule_slot()
+
+            log.info("⏰ [CYCLE-EC25] Khởi động theo chu kỳ EC25. Lịch hiện tại: [%s] active=%s, interval=%ds",
+                     slot_name, is_active, interval_sec)
+
+            # ── BƯỚC 5: Kiểm tra missed_capture_flag ─────────────────────────
+            # Nếu flag=True: CM4 đã bật lên nhưng chưa kịp chụp ở lần trước
+            # (boot chậm, qua mốc, hoặc lỗi giữa chừng) → chụp ngay bất kể mốc
+            if self.missed_capture_flag:
+                log.info("🚨 [MISSED-CAPTURE] Phát hiện missed_capture_flag=True → Chụp ngay không chờ mốc!")
+                if is_active:
+                    try:
+                        self.upload_capture(triggered_by="schedule")
+                        self.publish_telemetry()
+                    except Exception as e:
+                        log.error("Lỗi chụp bù missed: %s", e)
+                else:
+                    log.info("⏸ [MISSED-CAPTURE] Ngoài khung giờ → Bỏ qua dù có missed flag.")
+                    self._set_missed_capture_flag(False, "ngoài khung giờ")
+                    self.publish_telemetry()
+
+            elif is_active:
+                # ── BƯỚC 6a: Đang trong khung giờ, kiểm tra có cần chụp ngay không ──
+                # Dùng tolerance rộng hơn (5 phút = 300s) để bắt trường hợp boot chậm
+                on_slot = self.is_on_aligned_slot(interval_sec, tolerance_sec=300)
+                if on_slot:
+                    log.info("🔔 [CYCLE-EC25] Đang tại mốc chu kỳ (tolerance 5 phút) → Chụp ngay!")
+                    try:
+                        self.upload_capture(triggered_by="schedule")
+                        self.publish_telemetry()
+                    except Exception as e:
+                        log.error("Lỗi chụp định kỳ: %s", e)
+                else:
+                    log.info("⏸ [CYCLE-EC25] Trong khung giờ nhưng chưa đến mốc chụp → capture_loop sẽ xử lý.")
+                    self.publish_telemetry()
+            else:
+                log.info("⏸ [CYCLE-EC25] Ngoài khung giờ chụp định kỳ → Bỏ qua chụp ảnh.")
+                self.publish_telemetry()
+
+            # ── BƯỚC 7: Kiểm tra lại nếu người dùng can thiệp trong lúc chụp ──
+            if self.operating_mode == "interactive":
+                log.info("🎮 [FORCE-ON] Người dùng can thiệp từ Web trong lúc chụp → Giữ Online liên tục.")
+                self._save_ec25_state(force_power_on=True)
+                return
+
+            # ── BƯỚC 8: Tắt nguồn an toàn sau khi hoàn thành chu kỳ EC25 ────
+            if self.auto_shutdown_after_capture:
+                log.info("🌙 [AUTO SHUTDOWN] Hoàn thành chu kỳ EC25. Tắt hệ điều hành CM4 để EC25 ngắt nguồn...")
+                self.shutdown_host_cm4()
+            else:
+                log.info("⚡ [CYCLE-EC25] CM4 duy trì hoạt động daemon (auto_shutdown=False).")
+
+        threading.Thread(target=_smart_boot_task, name="smart_boot_manager", daemon=True).start()
 
         last_telemetry = time.time()
         try:

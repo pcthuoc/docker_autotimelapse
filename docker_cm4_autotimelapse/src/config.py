@@ -44,24 +44,34 @@ TELEMETRY_INTERVAL     = int(os.getenv("TELEMETRY_INTERVAL", "30"))
 OFFLINE_QUEUE_DIR      = os.getenv("OFFLINE_QUEUE_DIR", "/app/offline_queue")
 OFFLINE_RETRY_INTERVAL = int(os.getenv("OFFLINE_RETRY_INTERVAL", "60"))
 
-# Danh sách thông số máy ảnh hỗ trợ
+# Cấu hình Tự động chụp & Tắt nguồn CM4 (Chế độ tiết kiệm năng lượng EC25)
+AUTO_SHUTDOWN_AFTER_CAPTURE = os.getenv("AUTO_SHUTDOWN_AFTER_CAPTURE", "false").lower() in ("true", "1", "yes")
+AUTO_CAPTURE_ON_BOOT        = os.getenv("AUTO_CAPTURE_ON_BOOT", "false").lower() in ("true", "1", "yes")
+SHUTDOWN_DELAY_SEC          = float(os.getenv("SHUTDOWN_DELAY_SEC", "3.0"))
+
+# File state dùng chung giữa EC25 và CM4 Agent để đồng bộ trạng thái.
+# Lưu: force_power_on, missed_capture_flag, last_capture_ts
+EC25_STATE_FILE = os.getenv("EC25_STATE_FILE", "/app/offline_queue/ec25_state.json")
+
+# Danh sách thông số máy ảnh hỗ trợ - Đa dòng máy (Canon EOS, Nikon, Sony, v.v.)
+# Format: field_name -> (candidate_widget_names_tuple_or_list, is_writable)
 SETTING_SPECS = {
-    "iso":                   ("iso",                 True),
-    "aperture":              ("f-number",            True),
-    "shutter_speed":         ("shutterspeed2",       True),
-    "exposure_compensation": ("exposurecompensation",True),
-    "white_balance":         ("whitebalance",        True),
-    "image_format":          ("imagequality",        True),
-    "image_size":            ("imagesize",           True),
-    "focus_mode":            ("focusmode2",          True),
-    "autofocus":             ("autofocus",           True),
-    "capture_mode":          ("capturemode",         True),
-    "capture_target":        ("capturetarget",       True),
-    "high_iso_nr":           ("highisonr",           True),
-    "long_exp_nr":           ("longexpnr",           True),
-    "liveview_af":           ("liveviewaffocus",     True),
-    "exposure_mode":         ("expprogram",          False),
-    "focus_switch":          ("focusmode",           False),
+    "iso":                   (["iso"], True),
+    "aperture":              (["aperture", "f-number", "fnumber"], True),
+    "shutter_speed":         (["shutterspeed", "shutterspeed2"], True),
+    "exposure_compensation": (["exposurecompensation"], True),
+    "white_balance":         (["whitebalance"], True),
+    "image_format":          (["imageformat", "imagequality", "imageformatsd", "imageformatcf"], True),
+    "image_size":            (["imagesize"], True),
+    "focus_mode":            (["focusmode", "focusmode2"], True),
+    "autofocus":             (["autofocus"], True),
+    "capture_mode":          (["capturemode"], True),
+    "capture_target":        (["capturetarget"], True),
+    "high_iso_nr":           (["highisonr"], True),
+    "long_exp_nr":           (["longexpnr"], True),
+    "liveview_af":           (["liveviewaffocus"], True),
+    "exposure_mode":         (["autoexposuremode", "expprogram"], False),
+    "focus_switch":          (["focusmode", "focusmode2"], False),
 }
 
 SIM_INFO_TELEMETRY = {
@@ -69,3 +79,4 @@ SIM_INFO_TELEMETRY = {
     "number": "+84987654321",
     "iccid": "8984047123456789012",
 }
+

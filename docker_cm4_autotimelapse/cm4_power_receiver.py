@@ -30,6 +30,8 @@ import signal
 import sys
 import threading
 import time
+import urllib.request
+import urllib.error
 from datetime import datetime, timezone, timedelta
 
 try:
@@ -49,12 +51,16 @@ log = logging.getLogger("cm4_power_agent")
 class CM4PowerAgent:
     """Agent chuyên nhận lệnh Bật/Tắt & Get Info cho CM4 qua MQTT chuẩn Backend."""
 
-    def __init__(self, code, password, broker="mqtt.congnghetimelapse.com", port=1883, telemetry_interval=30):
+    def __init__(self, code, password, broker="mqtt.congnghetimelapse.com", port=1883,
+                 telemetry_interval=30, server_base="https://cloud.congnghetimelapse.com",
+                 state_file="/app/offline_queue/ec25_state.json"):
         self.code = code
         self.password = password
         self.broker = broker
         self.port = port
         self.telemetry_interval = telemetry_interval
+        self.server_base = server_base.rstrip("/")
+        self.state_file = state_file
 
         # MQTT Topics
         self.t_cmd    = f"camera/{self.code}/cmd"
@@ -66,6 +72,12 @@ class CM4PowerAgent:
         self.cm4_power_state = "running"
         self.running = False
         self.mqtt_client = None
+
+        # ── Trạng thái đồng bộ Cưỡng Bức vs. Chu Kỳ ──────────────────────────
+        # force_power_on: True khi user bật cưỡng bức từ Web UI
+        # → EC25 KHÔNG được cắt nguồn CM4 sau chụp
+        self.force_power_on = False
+        self._load_state()
 
         # Thông tin SIM 4G mặc định
         self.sim_info = {
@@ -123,6 +135,70 @@ class CM4PowerAgent:
             },
         }
 
+    # ── EC25 State File (đồng bộ trạng thái với CM4 Agent) ──────────────────
+
+    def _load_state(self):
+        """Đọc trạng thái được chia sẻ giữa EC25 và CM4 từ disk."""
+        try:
+            if os.path.exists(self.state_file):
+                with open(self.state_file, "r", encoding="utf-8") as f:
+                    state = json.load(f)
+                self.force_power_on = bool(state.get("force_power_on", False))
+                log.info("📂 [EC25 STATE] Đã đọc state từ disk: force_power_on=%s",
+                         self.force_power_on)
+        except Exception as e:
+            log.warning("⚠️ Không đọc được state file: %s", e)
+
+    def _save_state(self, **kwargs):
+        """Lưu trạng thái xuống disk (merge với state hiện có)."""
+        try:
+            state = {}
+            if os.path.exists(self.state_file):
+                try:
+                    with open(self.state_file, "r", encoding="utf-8") as f:
+                        state = json.load(f)
+                except Exception:
+                    pass
+            state.update(kwargs)
+            state["force_power_on"] = self.force_power_on
+            state["last_updated_by"] = "ec25_agent"
+            state["last_updated_ts"] = datetime.now(timezone.utc).isoformat()
+            os.makedirs(os.path.dirname(self.state_file), exist_ok=True)
+            with open(self.state_file, "w", encoding="utf-8") as f:
+                json.dump(state, f, indent=2)
+        except Exception as e:
+            log.warning("⚠️ Không lưu được state file: %s", e)
+
+    def pull_server_config(self):
+        """Kéo trạng thái force_power_on từ Server và lưu xuống disk.
+
+        Returns:
+            (ok: bool, force_on: bool)
+        """
+        try:
+            url = f"{self.server_base}/api/device/config/"
+            req = urllib.request.Request(
+                url, method="GET",
+                headers={
+                    "X-Device-Key": self.code,
+                    "X-Device-Secret": self.password,
+                    "User-Agent": "AutoTimelapse-EC25-Agent/2.0",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=15) as r:
+                data = json.loads(r.read().decode() or "{}")
+                if data.get("ok"):
+                    force_on = bool(data.get("force_power_on", False))
+                    self.force_power_on = force_on
+                    self._save_state()
+                    log.info("📥 [EC25 CONFIG SYNC] force_power_on=%s (từ server)", force_on)
+                    return True, force_on
+        except Exception as e:
+            log.warning("⚠️ EC25 không pull được config từ server: %s. Dùng state local.", e)
+        # Fallback: dùng giá trị đã cache trong disk
+        log.info("📂 [EC25 CONFIG] Fallback state local: force_power_on=%s", self.force_power_on)
+        return False, self.force_power_on
+
     # ── Đọc SIM từ Modem thực tế (nếu cắm trên CM4) ───────────────────────────
 
     def _read_real_sim_if_available(self):
@@ -158,7 +234,10 @@ class CM4PowerAgent:
 
             # Subscribe topic nhận lệnh từ Web / Backend
             client.subscribe(self.t_cmd, qos=1)
-            log.info("👂 Đang lắng nghe lệnh tại topic: %s", self.t_cmd)
+            # Subscribe thêm topic status để nhận sự kiện từ CM4 agent
+            # (ví dụ: cycle_capture_done khi CM4 chụp xong chu kỳ)
+            client.subscribe(self.t_status, qos=0)
+            log.info("👂 Đang lắng nghe lệnh tại: %s | status tại: %s", self.t_cmd, self.t_status)
 
             # Báo Online trạng thái thiết bị
             client.publish(self.t_status, json.dumps({"online": True}), qos=1, retain=True)
@@ -174,6 +253,28 @@ class CM4PowerAgent:
     def _on_message(self, client, userdata, msg):
         try:
             payload = json.loads(msg.payload.decode("utf-8"))
+            # ── Xử lý event từ CM4 agent gửi lên topic status ───────────────
+            if msg.topic == self.t_status:
+                event = payload.get("event", "")
+                if event == "cycle_capture_done":
+                    taken_at = payload.get("taken_at", "")
+                    media_count = payload.get("media_count", 0)
+                    log.info("📷 [EC25] Nhận câu lệnh cycle_capture_done: %d ảnh lúc %s",
+                             media_count, taken_at)
+                    # Cập nhật state: chu kỳ đã hoàn tất
+                    self._save_state(
+                        last_capture_ts=taken_at,
+                        last_cycle_capture_done=True,
+                    )
+                    # Nếu đang force_on: bỏ qua (CM4 sẽ không tự shutdown)
+                    # Nếu không force_on: lóg biết CM4 sắp shutdown để EC25 ngắt nguồn
+                    if self.force_power_on:
+                        log.info("🎮 [EC25] force_on=True → CM4 GIỮ ONLINE, không ngắt nguồn theo chu kỳ.")
+                    else:
+                        log.info("🌙 [EC25] force_on=False → CM4 sắp shutdown. EC25 chờ ngắt nguồn.")
+                return  # Không xử lý status message như lệnh
+
+            # ── Xử lý lệnh thông thường từ Web / Backend ───────────────────
             cmd = payload.get("command", "")
             rid = payload.get("request_id", "")
             data_payload = payload.get("payload") or {}
@@ -191,28 +292,36 @@ class CM4PowerAgent:
         resp_data = {}
 
         # ── 1. LỆNH BẬT NGUỒN CM4 ─────────────────────────────────────────────
-        if cmd in ("power_on_cm4", "power_on"):
-            log.info("⚡ Thực thi lệnh BẬT CM4...")
+        if cmd in ("power_on_cm4", "power_on", "set_interactive_mode"):
+            log.info("⚡ [FORCE-ON] Thực thi lệnh BẬT CM4 (cưỡng bức)...")
             self.cm4_power_state = "running"
+            # Đánh dấu force_on=True: EC25 biết CM4 đang giữ online liên tục
+            self.force_power_on = True
+            self._save_state()
             resp_data = {
                 "cm4_power_state": "running",
                 "camera_power": "on",
-                "message": "CM4 is now RUNNING",
+                "force_power_on": True,
+                "message": "CM4 is now RUNNING (force-on mode)",
             }
             self.send_telemetry(node="cm4")
-            log.info("🟢 CM4 đã BẬT (cm4_power_state = 'running')")
+            log.info("🟢 [FORCE-ON] CM4 đã BẬT → force_power_on=True (không cắt nguồn theo chu kỳ)")
 
         # ── 2. LỆNH TẮT NGUỒN CM4 ─────────────────────────────────────────────
         elif cmd in ("power_off_cm4", "power_off"):
             log.info("💤 Thực thi lệnh TẮT CM4...")
             self.cm4_power_state = "off"
+            # Reset force_on=False: CM4 đã tắt, EC25 trở lại chế độ chu kỳ
+            self.force_power_on = False
+            self._save_state()
             resp_data = {
                 "cm4_power_state": "off",
                 "camera_power": "off",
+                "force_power_on": False,
                 "message": "CM4 is now OFF",
             }
             self.send_telemetry(node="esp32")
-            log.info("🔴 CM4 đã TẮT (cm4_power_state = 'off')")
+            log.info("🔴 [CYCLE-EC25] CM4 đã TẮT → force_power_on=False (trở lại chế độ chu kỳ)")
 
         # ── 3. LỆNH GET SIM INFO (Lấy thông tin SIM 4G) ────────────────────────
         elif cmd in ("get_sim_info", "sim_info"):
@@ -262,12 +371,14 @@ class CM4PowerAgent:
                 "online": True,
                 "camera_code": self.code,
                 "cm4_power_state": self.cm4_power_state,
+                "force_power_on": self.force_power_on,
                 "camera_power": "on" if self.cm4_power_state == "running" else "off",
                 "firmware_version": "cm4-power-agent-v2.0",
                 "sim": self.sim_info,
                 "settings": self.settings,
             }
-            log.info("ℹ️ [GET_STATUS] Báo cáo trạng thái CM4: %s", self.cm4_power_state)
+            log.info("ℹ️ [GET_STATUS] Báo cáo trạng thái CM4: %s | force_on=%s",
+                     self.cm4_power_state, self.force_power_on)
 
         # ── 7. LỆNH REBOOT ────────────────────────────────────────────────────
         elif cmd in ("reboot", "restart_service"):
@@ -297,29 +408,29 @@ class CM4PowerAgent:
             return
         try:
             now_dt = datetime.now(timezone(timedelta(hours=7)))
-            active_node = node or ("cm4" if self.cm4_power_state == "running" else "esp32")
+            active_node = node or ("cm4" if self.cm4_power_state == "running" else "ec25")
+
+            # ── EC25 chỉ có thể đo được sóng 4G qua AT+CSQ ──
+            # Không có I2C nên KHÔNG gửi: battery_voltage, solar_voltage,
+            # temperature_c, humidity_percent — đó là cảm biến của CM4.
+            self._read_real_sim_if_available()
+            sim_dbm = self.sim_info.get("signal_dbm", -75) + random.choice([-2, -1, 0, 1, 2])
 
             telemetry_data = {
                 "camera_code": self.code,
                 "node": active_node,
                 "cm4_power_state": self.cm4_power_state,
-                "sim_active_node": "cm4" if self.cm4_power_state == "running" else "esp32",
-                "battery_voltage": round(random.uniform(12.2, 12.6), 2),
-                "battery_percent": random.randint(85, 98),
-                "solar_voltage": round(random.uniform(15.0, 18.0), 1),
-                "solar_percent": random.randint(70, 100),
-                "temperature_c": round(random.uniform(33.0, 41.0), 1),
-                "humidity_percent": random.randint(60, 80),
-                "sim_signal_dbm": random.randint(-75, -60),
-                "is_charging": True,
+                "force_power_on": self.force_power_on,
+                "sim_active_node": active_node,
+                "sim_signal_dbm": max(-105, min(-55, sim_dbm)),
                 "firmware_version": "cm4-power-agent-v2.0",
                 "timestamp": now_dt.isoformat(),
             }
 
             self.mqtt_client.publish(self.t_data, json.dumps(telemetry_data), qos=1)
-            log.info("📡 [TELEMETRY] Node: %s | cm4_power_state: '%s' | Pin: %d%% (%.2fV)",
+            log.info("📡 [TELEMETRY EC25] Node: %s | cm4=%s | force_on=%s | Signal: %ddBm",
                      active_node, self.cm4_power_state,
-                     telemetry_data["battery_percent"], telemetry_data["battery_voltage"])
+                     self.force_power_on, telemetry_data["sim_signal_dbm"])
         except Exception as e:
             log.warning("Lỗi khi gửi Telemetry: %s", e)
 
@@ -337,8 +448,20 @@ class CM4PowerAgent:
         log.info("  AUTOTIMELAPSE CM4 POWER & INFO CONTROLLER AGENT")
         log.info("  Camera Code: %s", self.code)
         log.info("  MQTT Broker: %s:%d", self.broker, self.port)
+        log.info("  Server Base: %s", self.server_base)
         log.info("  Chu kỳ Telemetry: %ds", self.telemetry_interval)
+        log.info("  State file: %s", self.state_file)
         log.info("=" * 65)
+
+        # ── Kéo trạng thái force_power_on từ server ngay khi khởi động ──
+        # Điều này đảm bảo EC25 biết được người dùng đã tắt hay bật cưỡng bức,
+        # tránh EC25 ngắt nguồn CM4 nhong lúc CM4 đang được bật cưỡng bức
+        # mà chưa kịp đồng bộ state.
+        threading.Thread(
+            target=self.pull_server_config,
+            name="init_config_pull",
+            daemon=True
+        ).start()
 
         try:
             client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=f"pwr_{self.code}")
@@ -382,9 +505,15 @@ def main():
     parser.add_argument("--broker", default=os.getenv("MQTT_BROKER", "mqtt.congnghetimelapse.com"), help="MQTT Broker Host")
     parser.add_argument("--port", type=int, default=int(os.getenv("MQTT_PORT", 1883)), help="MQTT Port")
     parser.add_argument("--interval", type=int, default=int(os.getenv("TELEMETRY_INTERVAL", 30)), help="Chu kỳ Telemetry")
+    parser.add_argument("--server", default=os.getenv("SERVER_BASE", "https://cloud.congnghetimelapse.com"), help="Server Base URL")
+    parser.add_argument("--state-file", default=os.getenv("EC25_STATE_FILE", "/app/offline_queue/ec25_state.json"), help="Đường dẫn file state EC25")
 
     args = parser.parse_args()
-    agent = CM4PowerAgent(args.code, args.secret, args.broker, args.port, args.interval)
+    agent = CM4PowerAgent(
+        args.code, args.secret, args.broker, args.port, args.interval,
+        server_base=args.server,
+        state_file=args.state_file,
+    )
 
     def _sig_handler(sig, frame):
         agent.stop()
