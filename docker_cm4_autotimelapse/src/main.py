@@ -320,6 +320,27 @@ class CameraAgent:
                 if "schedules" in data:
                     self.schedule_rules = data["schedules"]
 
+                # Đồng bộ ngưỡng nhiệt độ quạt từ Server nếu Backend có trả về
+                if "fan_temp_off" in data:
+                    os.environ["FAN_TEMP_OFF"] = str(data["fan_temp_off"])
+                if "fan_temp_mid" in data:
+                    os.environ["FAN_TEMP_MID"] = str(data["fan_temp_mid"])
+                if "fan_temp_high" in data:
+                    os.environ["FAN_TEMP_HIGH"] = str(data["fan_temp_high"])
+
+                try:
+                    from telemetry import get_fan_controller
+                    fc = get_fan_controller()
+                    if fc:
+                        if "fan_temp_off" in data:
+                            fc.temp_off = float(data["fan_temp_off"])
+                        if "fan_temp_mid" in data:
+                            fc.temp_mid = float(data["fan_temp_mid"])
+                        if "fan_temp_high" in data:
+                            fc.temp_high = float(data["fan_temp_high"])
+                except Exception:
+                    pass
+
                 self.save_schedule_config()
                 force_on = bool(data.get("force_power_on", False))
                 log.info("📥 [CONFIG SYNC] Kéo thành công từ Server: interval=%ds, force_power_on=%s, %d lịch",
