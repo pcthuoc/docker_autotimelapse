@@ -748,18 +748,18 @@ class CameraAgent:
                 continue
 
             wait_sec = self.get_seconds_to_next_aligned_slot(interval_sec)
-            log.info("⏱ [%s] Chụp kế tiếp sau %.0f giây (chu kỳ %ds, căn chuẩn mốc phút chẵn)", slot_name, wait_sec, interval_sec)
+            target_epoch = time.time() + wait_sec
+            log.info("⏱ [%s] Chụp kế tiếp sau %.1f giây (chu kỳ %ds, căn chuẩn mốc phút chẵn)", slot_name, wait_sec, interval_sec)
 
             # ── Set missed_capture_flag trước khi bắt đầu chờ ────────────────
-            # Nếu CM4 tắt/reboot trong lúc sleep này và bật lại,
-            # smart_boot_task sẽ đọc flag=True và chụp ngay thay vì chờ mốc tiếp.
             self._set_missed_capture_flag(True, f"bắt đầu chờ mốc {slot_name} (wait={wait_sec:.0f}s)")
 
-            elapsed = 0
-            while elapsed < wait_sec and self.running:
+            while self.running:
+                remaining = target_epoch - time.time()
+                if remaining <= 0:
+                    break
                 self.watchdog.touch("capture_loop")
-                time.sleep(1)
-                elapsed += 1
+                time.sleep(min(1.0, max(0.05, remaining)))
                 curr_active, curr_interval, _ = self.get_active_schedule_slot()
                 if not curr_active or curr_interval != interval_sec:
                     break
@@ -767,8 +767,7 @@ class CameraAgent:
             curr_active, _, _ = self.get_active_schedule_slot()
             if self.running and curr_active:
                 try:
-                    log.info("🔔 [%s] Bắt đầu chu kỳ chụp tự động (mốc phút chẵn)...", slot_name)
-                    # missed_capture_flag sẽ được xoá bên trong upload_capture()
+                    log.info("🔔 [%s] Bắt đầu chu kỳ chụp tự động (đúng mốc phút chẵn)...", slot_name)
                     self.upload_capture(triggered_by="schedule")
                     if self.auto_shutdown_after_capture and self.operating_mode != "interactive":
                         self.publish_telemetry()
