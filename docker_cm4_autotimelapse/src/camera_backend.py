@@ -76,12 +76,14 @@ class HybridCameraBackend:
 
                     try:
                         config = cam.get_config()
-                        try:
-                            q = config.get_child_by_name("imagequality")
-                            q.set_value("JPEG Fine")
-                            cam.set_config(config)
-                        except Exception:
-                            pass
+                        w_fmt, _ = self._find_widget(config, ["imagequality", "imageformat", "imageformatsd"])
+                        if w_fmt and not w_fmt.get_readonly():
+                            choices = [str(w_fmt.get_choice(i)) for i in range(w_fmt.count_choices())] if w_fmt.get_type() in (5, 6) else []
+                            for preferred in ["JPEG Fine", "Large Fine JPEG", "Large Fine", "Fine"]:
+                                if preferred in choices:
+                                    w_fmt.set_value(preferred)
+                                    cam.set_config(config)
+                                    break
                     except Exception:
                         pass
 
@@ -200,6 +202,52 @@ class HybridCameraBackend:
                 continue
         return None, None
 
+    def get_camera_info(self):
+        """Lấy thông tin nhận diện model, brand, lens và serial của máy ảnh (Hỗ trợ Canon, Nikon, Sony)."""
+        if not self.use_real_hardware or self._camera is None:
+            return {
+                "is_real": False,
+                "brand": "Simulated",
+                "model": "PIL Simulated Camera",
+                "lens": "None",
+                "serial": "SIM-001",
+            }
+        try:
+            abilities = self._camera.get_abilities()
+            model_name = getattr(abilities, "model", "USB Camera")
+        except Exception:
+            model_name = "USB Camera"
+
+        brand = "Generic"
+        model_lower = model_name.lower()
+        if "canon" in model_lower:
+            brand = "Canon"
+        elif "nikon" in model_lower:
+            brand = "Nikon"
+        elif "sony" in model_lower:
+            brand = "Sony"
+
+        lens_name = "Unknown"
+        serial_number = "Unknown"
+        try:
+            config = self._camera.get_config()
+            lens_widget, _ = self._find_widget(config, ["lensname", "lensid", "eoslensname"])
+            if lens_widget:
+                lens_name = str(lens_widget.get_value())
+            serial_widget, _ = self._find_widget(config, ["serialnumber", "eosserialnumber"])
+            if serial_widget:
+                serial_number = str(serial_widget.get_value())
+        except Exception:
+            pass
+
+        return {
+            "is_real": True,
+            "brand": brand,
+            "model": model_name,
+            "lens": lens_name,
+            "serial": serial_number,
+        }
+
     def get_settings(self):
         if GPHOTO2_AVAILABLE and not self.use_real_hardware:
             self._try_init_real_camera()
@@ -226,6 +274,7 @@ class HybridCameraBackend:
                                 }
                             except Exception:
                                 pass
+                    capabilities["_camera_info"] = self.get_camera_info()
                     return applied, capabilities
                 except Exception as e:
                     log.warning("Lỗi đọc cấu hình máy ảnh thật (%s) — Tái kết nối...", e)
@@ -243,6 +292,7 @@ class HybridCameraBackend:
         capabilities["aperture"]["choices"] = ["f/2.8", "f/4", "f/5.6", "f/8", "f/11", "f/16"]
         capabilities["shutter_speed"]["choices"] = ["1/4000", "1/2000", "1/1000", "1/500", "1/200", "1/100"]
         capabilities["white_balance"]["choices"] = ["Auto", "Daylight", "Cloudy", "Shade", "Tungsten"]
+        capabilities["_camera_info"] = self.get_camera_info()
         return dict(self._sim_applied), capabilities
 
     def set_settings(self, requested):
