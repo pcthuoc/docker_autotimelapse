@@ -222,3 +222,32 @@ config2 = cam.get_config()
 print('ISO hiện tại trên máy thật:', config2.get_child_by_name('iso').get_value())
 "
 ```
+
+---
+
+## ⚡ ĐẶC TẢ MẠCH CẦU PHÂN ÁP TRỞ ADS1115 & QUẠT TẢN NHIỆT SẠC (GPIO 19)
+
+### 1. Bảng Hệ Số Cầu Phân Áp Trở (ADC Resistor Dividers):
+
+| Ngõ Đo / Chức Năng | Kênh ADS1115 | Điện Trở Trên ($R_1$) | Điện Trở Dưới ($R_2$) | Công Thức Hệ Số (Scale) | Hệ Số Scale Chuẩn | Điện Áp Pin ADC Tối Đa |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|
+| **Đo 6V (Sạc Kênh 2)** | **AIN2** | **$20\text{ k}\Omega$** | **$10\text{ k}\Omega$** | $\frac{20 + 10}{10} = \frac{30}{10}$ | **`3.0000`** | $V_{in}=6.0\text{V} \rightarrow V_{pin}=2.0\text{V}$ |
+| **Đo Năng Lượng Solar** | **AIN0** | **$47\text{ k}\Omega$** | **$4.7\text{ k}\Omega$** | $\frac{47 + 4.7}{4.7} = \frac{51.7}{4.7}$ | **`11.0000`** | $V_{in}=25.0\text{V} \rightarrow V_{pin}=2.27\text{V}$ |
+| **Đo Điện Áp Pin (Bat)** | **AIN3** | **$100\text{ k}\Omega$** | **$13\text{ k}\Omega$** | $\frac{100 + 13}{13} = \frac{113}{13}$ | **`8.6923`** | $V_{in}=14.8\text{V} \rightarrow V_{pin}=1.70\text{V}$ |
+
+#### 📐 Công Thức Tính Điện Áp Thực Tế:
+$$V_{in} = V_{\text{ADC\_pin}} \times \text{Scale}$$
+- **Kênh 2 ($V_{in\_ch2}$):** $V_{\text{pin}} \times 3.0$
+- **Solar ($V_{solar}$):** $V_{\text{pin}} \times 11.0$
+- **Battery ($V_{bat}$):** $V_{\text{pin}} \times 8.6923$
+
+---
+
+### 2. Logic Điều Khiển Quạt Tản Nhiệt Sạc (GPIO 19):
+
+- **Ban ngày (07:00 ➔ 16:00):** Tự động **BẬT QUẠT (GPIO 19 = HIGH)** khi:
+  - Kênh ADS 2 $> 4.5\text{V}$ **HOẶC** Điện áp Solar $> 15.0\text{V}$.
+- **Ngoại lệ Ban Đêm (ngoài 07:00 - 16:00):** Vẫn **BẬT QUẠT (GPIO 19 = HIGH)** nếu:
+  - Kênh ADS 2 $> 4.5\text{V}$ **VÀ** Điện áp Solar $> 15.0\text{V}$ (đang sạc nguồn ngoài ban đêm).
+- **Trường hợp còn lại:** Tự động **TẮT QUẠT (GPIO 19 = LOW)**.
+
