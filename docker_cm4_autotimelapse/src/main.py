@@ -14,6 +14,13 @@ Luồng xử lý chính kết hợp:
 
 import sys
 import os
+
+# Ưu tiên load toàn bộ module từ thư mục src/ hiện tại (tránh dính file cũ trong /app của image)
+SRC_DIR = os.path.dirname(os.path.abspath(__file__))
+if SRC_DIR in sys.path:
+    sys.path.remove(SRC_DIR)
+sys.path.insert(0, SRC_DIR)
+
 import io
 import json
 import time
@@ -525,26 +532,36 @@ class CameraAgent:
         return media_ids
 
     def _normalize_image_bytes(self, raw_bytes, preview_bytes=None):
+        """Đảm bảo dữ liệu ảnh là JPEG hợp lệ với độ phân giải đầy đủ."""
+        # 1. Thử decode ảnh gốc (full resolution)
+        if raw_bytes:
+            try:
+                with Image.open(io.BytesIO(raw_bytes)) as im:
+                    w, h = im.size
+                    if im.format == "JPEG" and w >= 600 and h >= 400:
+                        return raw_bytes, w, h
+                    buf = io.BytesIO()
+                    rgb = im.convert("RGB")
+                    rgb.save(buf, "JPEG", quality=92)
+                    return buf.getvalue(), rgb.size[0], rgb.size[1]
+            except Exception as e_raw:
+                log.debug("Ảnh raw_bytes không decode trực tiếp được (%s), thử preview_bytes...", e_raw)
+
+        # 2. Fallback sang preview_bytes nếu raw_bytes là file định dạng RAW không decode được
         if preview_bytes:
             try:
                 with Image.open(io.BytesIO(preview_bytes)) as im:
                     pw, ph = im.size
                     if im.format == "JPEG" and pw >= 600 and ph >= 400:
                         return preview_bytes, pw, ph
-            except Exception:
-                pass
-        try:
-            with Image.open(io.BytesIO(raw_bytes)) as im:
-                w, h = im.size
-                if im.format == "JPEG" and w >= 600 and h >= 400:
-                    return raw_bytes, w, h
-                buf = io.BytesIO()
-                rgb = im.convert("RGB")
-                rgb.save(buf, "JPEG", quality=90)
-                return buf.getvalue(), rgb.size[0], rgb.size[1]
-        except Exception as e:
-            log.warning("Không decode được ảnh (%s), giữ nguyên.", e)
-            return raw_bytes, 1920, 1080
+                    buf = io.BytesIO()
+                    rgb = im.convert("RGB")
+                    rgb.save(buf, "JPEG", quality=90)
+                    return buf.getvalue(), rgb.size[0], rgb.size[1]
+            except Exception as e_pv:
+                log.debug("Lỗi decode preview_bytes: %s", e_pv)
+
+        return raw_bytes, 1920, 1080
 
     def publish_telemetry(self):
         if not self.mqtt_client or not self.mqtt_client.is_connected():
@@ -706,21 +723,8 @@ class CameraAgent:
             elif cmd == "stop_live_view":
                 log.info("🛑 [LIVE VIEW] Dừng luồng Live View...")
                 self.live_session_id = None
-                # Đóng live preview / viewfinder trên camera nếu đang mở
-                if self.backend and self.backend.use_real_hardware and self.backend._camera:
-                    try:
-                        cfg = self.backend._camera.get_config()
-                        for vf_name in ("viewfinder", "evfmode"):
-                            try:
-                                w = cfg.get_child_by_name(vf_name)
-                                w.set_value(0)
-                                self.backend._camera.set_config(cfg)
-                                log.info("  ✓ Đã tắt viewfinder/evfmode trên máy ảnh")
-                                break
-                            except Exception:
-                                pass
-                    except Exception as e:
-                        log.debug("Lỗi tắt viewfinder: %s", e)
+                if self.backend:
+                    self.backend.end_live_view()
                 resp = {"type": cmd, "request_id": rid, "status": "ok",
                         "data": {"live_view": False}}
 

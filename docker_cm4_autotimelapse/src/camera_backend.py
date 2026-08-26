@@ -42,6 +42,7 @@ class HybridCameraBackend:
         self._detected_camera_info = None   # Cache kết quả get_camera_info()
         self._canon_profile = None          # Canon EOS profile từ CANON_EOS_PROFILES
         self._canon_model_key = None        # Key match trong CANON_EOS_PROFILES (vd: "eos 6d")
+        self._in_live_view = False          # Cờ theo dõi camera đang ở chế độ Live View (EVF/Mirror up)
 
         self._sim_applied = {
             "iso": "100", "aperture": "f/4", "shutter_speed": "1/200",
@@ -312,6 +313,31 @@ class HybridCameraBackend:
                                     break
                     except Exception as e:
                         log.debug("Không set được DriveMode: %s", e)
+
+            # ── 3d. Set Capture Target = Internal RAM (tránh lỗi khi không có thẻ nhớ) ──
+            ct_widget, _ = self._find_widget(config, ["capturetarget"])
+            if ct_widget and not ct_widget.get_readonly():
+                current_ct = str(ct_widget.get_value())
+                if current_ct != "Internal RAM":
+                    try:
+                        ct_widget.set_value("Internal RAM")
+                        changes_made.append(f"CaptureTarget: {current_ct} → Internal RAM")
+                    except Exception as e:
+                        log.debug("Không set được CaptureTarget: %s", e)
+
+            # ── 3e. Set Quick Review Time = 2 seconds hoặc None ──
+            rt_widget, _ = self._find_widget(config, ["reviewtime"])
+            if rt_widget and not rt_widget.get_readonly():
+                try:
+                    wtype = rt_widget.get_type()
+                    if wtype in (5, 6):
+                        choices = [str(rt_widget.get_choice(i)) for i in range(rt_widget.count_choices())]
+                        for pref in ["None", "2 seconds"]:
+                            if pref in choices:
+                                rt_widget.set_value(pref)
+                                break
+                except Exception:
+                    pass
 
             # ── Apply tất cả thay đổi ──
             if changes_made:
@@ -603,71 +629,195 @@ class HybridCameraBackend:
         mismatches = {k: {"requested": v, "applied": applied.get(k)} for k, v in requested.items() if applied.get(k) != str(v)}
         return applied, capabilities, mismatches
 
+    def end_live_view(self):
+        """Đóng phiên Live View và hạ gương lật (mirror down) để sẵn sàng chụp ảnh."""
+        with self._lock:
+            if self.use_real_hardware and self._camera is not None and self._in_live_view:
+                try:
+                    self._camera.exit()
+                    time.sleep(0.2)
+                    cam = gp.Camera()
+                    cam.init()
+                    self._camera = cam
+                    self._in_live_view = False
+                    log.info("🛑 [LIVE VIEW] Đã kết thúc Live View & hạ gương lật (Mirror Down) sẵn sàng chụp ảnh.")
+                except Exception as e:
+                    log.debug("Lỗi kết thúc live view: %s", e)
+                    self._in_live_view = False
+
     def capture(self, camera_code="CAM-CM4"):
-        """Chụp ảnh từ máy ảnh thật (USB gphoto2) với cơ chế fallback trigger_capture cho Nikon/Canon/Sony."""
+        """Chụp ảnh từ máy ảnh thật (USB gphoto2) với cơ chế Canon EOS Remote Release + Multi-tier Fallback."""
         if GPHOTO2_AVAILABLE and not self.use_real_hardware:
             self._try_init_real_camera()
 
         if self.use_real_hardware:
             with self._lock:
                 try:
+                    # Nếu máy ảnh vừa chạy Live View, kết thúc phiên preview để hạ gương lật
+                    if self._in_live_view:
+                        try:
+                            self._camera.exit()
+                            time.sleep(0.2)
+                            cam = gp.Camera()
+                            cam.init()
+                            self._camera = cam
+                            self._in_live_view = False
+                            log.info("🛑 [LIVE VIEW] Đã hạ gương lật trước khi chụp.")
+                        except Exception as e_lv:
+                            log.debug("Lỗi reset sau preview: %s", e_lv)
+                            self._in_live_view = False
+
                     # ✅ BƯỚC 0: Kiểm tra máy ảnh thực sự sẵn sàng trước khi bấm màn trập
                     if not self._wait_until_camera_ready(timeout=20.0):
                         log.warning("⚠️ Máy ảnh chưa sẵn sàng sau 20s — Chuyển sang giả lập.")
                         self.disconnect_real_camera()
-                        # Rơi xuống simulated bên dưới
                         raise RuntimeError("Camera not ready")
 
                     log.info("📸 [REAL CAMERA] Phát lệnh màn trập chụp ảnh...")
 
-                    # 1. Tắt viewfinder (live view) trước khi chụp nếu đang bật
+                    # 1. Tắt viewfinder và evfmode (live view) trước khi chụp nếu đang bật
                     try:
                         config = self._camera.get_config()
-                        vf = config.get_child_by_name("viewfinder")
-                        if int(vf.get_value()) != 0:
-                            vf.set_value(0)
+                        evf_changed = False
+
+                        w_evf, _ = self._find_widget(config, ["evfmode"])
+                        if w_evf and str(w_evf.get_value()) != "0":
+                            try:
+                                w_evf.set_value("0")
+                                evf_changed = True
+                            except Exception:
+                                pass
+
+                        w_vf, _ = self._find_widget(config, ["viewfinder", "eosviewfinder"])
+                        if w_vf:
+                            try:
+                                if int(w_vf.get_value()) != 0:
+                                    w_vf.set_value(0)
+                                    evf_changed = True
+                            except Exception:
+                                pass
+
+                        if evf_changed:
                             self._camera.set_config(config)
-                            time.sleep(0.5)
-                    except Exception:
-                        pass
+                            time.sleep(0.3)
+                    except Exception as e_evf:
+                        log.debug("Lỗi tắt EVF/viewfinder: %s", e_evf)
 
                     # 2. Xóa các event tồn đọng
                     try:
                         while True:
-                            ev_type, _ = self._camera.wait_for_event(100)
+                            ev_type, _ = self._camera.wait_for_event(50)
                             if ev_type == gp.GP_EVENT_TIMEOUT:
                                 break
                     except Exception:
                         pass
 
-                    # 3. Thử chụp bằng capture(GP_CAPTURE_IMAGE)
-                    first_path = None
-                    try:
-                        first_path = self._camera.capture(gp.GP_CAPTURE_IMAGE)
-                    except Exception as e_cap:
-                        log.warning("Lỗi capture() (%s) — Thử trigger_capture()...", e_cap)
-                        try:
-                            self._camera.trigger_capture()
-                        except Exception as e_trig:
-                            log.error("Lỗi trigger_capture(): %s", e_trig)
-
                     paths = {}
-                    if first_path:
-                        paths[(first_path.folder, first_path.name)] = first_path
+                    is_canon = (self._canon_profile is not None) or (self.get_camera_info().get("brand") == "Canon")
 
-                    # 4. Chờ file mới được ghi vào thẻ nhớ/RAM máy ảnh
-                    deadline = time.monotonic() + 6
-                    while time.monotonic() < deadline:
+                    # ── 3. CANON EOS SHUTTER TRIGGER (eosremoterelease) ──
+                    if is_canon:
+                        log.info("📸 [CANON SHUTTER] Kích hoạt chụp ảnh qua Canon EOS Remote Release...")
+                        af_success = False
+
+                        # Thử Shutter Release với AutoFocus (Press Full AF)
                         try:
-                            event_type, event_data = self._camera.wait_for_event(400)
-                            if event_type == gp.GP_EVENT_FILE_ADDED:
-                                paths[(event_data.folder, event_data.name)] = event_data
-                            elif event_type == gp.GP_EVENT_CAPTURE_COMPLETE:
-                                if paths:
-                                    break
-                        except Exception:
-                            break
+                            cfg = self._camera.get_config()
+                            w_rel, _ = self._find_widget(cfg, ["eosremoterelease"])
+                            if w_rel:
+                                # Đảm bảo target là Internal RAM
+                                w_ct, _ = self._find_widget(cfg, ["capturetarget"])
+                                if w_ct:
+                                    w_ct.set_value("Internal RAM")
 
+                                w_rel.set_value("Press Half AF")
+                                self._camera.set_config(cfg)
+                                time.sleep(0.4)
+
+                                cfg = self._camera.get_config()
+                                w_rel, _ = self._find_widget(cfg, ["eosremoterelease"])
+                                w_rel.set_value("Press Full AF")
+                                self._camera.set_config(cfg)
+                                time.sleep(0.4)
+
+                                cfg = self._camera.get_config()
+                                w_rel, _ = self._find_widget(cfg, ["eosremoterelease"])
+                                w_rel.set_value("Release")
+                                self._camera.set_config(cfg)
+
+                                # Polling event chờ file
+                                deadline = time.monotonic() + 4.0
+                                while time.monotonic() < deadline:
+                                    ev_type, ev_data = self._camera.wait_for_event(300)
+                                    if ev_type == gp.GP_EVENT_FILE_ADDED:
+                                        paths[(ev_data.folder, ev_data.name)] = ev_data
+                                        af_success = True
+                                        break
+                        except Exception as e_af:
+                            log.warning("⚠️ Lỗi Press Full AF (%s)", e_af)
+
+                        # Nếu Press Full AF không ra file (phòng tối, lens không khóa nét được ở One Shot AF),
+                        # tự động fallback sang Press Full MF (Manual Focus Release - cưỡng bức chụp ngay lập tức)
+                        if not af_success or not paths:
+                            log.info("🎯 [CANON MF FALLBACK] Thử bấm màn trập Manual Focus (Press Full MF)...")
+                            try:
+                                cfg = self._camera.get_config()
+                                w_rel, _ = self._find_widget(cfg, ["eosremoterelease"])
+                                if w_rel:
+                                    w_rel.set_value("Press Half MF")
+                                    self._camera.set_config(cfg)
+                                    time.sleep(0.2)
+
+                                    cfg = self._camera.get_config()
+                                    w_rel, _ = self._find_widget(cfg, ["eosremoterelease"])
+                                    w_rel.set_value("Press Full MF")
+                                    self._camera.set_config(cfg)
+                                    time.sleep(0.4)
+
+                                    cfg = self._camera.get_config()
+                                    w_rel, _ = self._find_widget(cfg, ["eosremoterelease"])
+                                    w_rel.set_value("Release")
+                                    self._camera.set_config(cfg)
+
+                                    # Polling event chờ file
+                                    deadline = time.monotonic() + 8.0
+                                    while time.monotonic() < deadline:
+                                        ev_type, ev_data = self._camera.wait_for_event(300)
+                                        if ev_type == gp.GP_EVENT_FILE_ADDED:
+                                            paths[(ev_data.folder, ev_data.name)] = ev_data
+                                            break
+                            except Exception as e_mf:
+                                log.warning("⚠️ Lỗi Press Full MF (%s)", e_mf)
+
+                    # ── 4. NON-CANON HOẶC STANDARD GPHOTO2 FALLBACK ──
+                    if not paths:
+                        first_path = None
+                        try:
+                            first_path = self._camera.capture(gp.GP_CAPTURE_IMAGE)
+                        except Exception as e_cap:
+                            log.warning("Lỗi capture() (%s) — Thử trigger_capture()...", e_cap)
+                            try:
+                                self._camera.trigger_capture()
+                            except Exception as e_trig:
+                                log.error("Lỗi trigger_capture(): %s", e_trig)
+
+                        if first_path:
+                            paths[(first_path.folder, first_path.name)] = first_path
+
+                        # Chờ file mới được ghi vào thẻ nhớ/RAM máy ảnh
+                        deadline = time.monotonic() + 6
+                        while time.monotonic() < deadline:
+                            try:
+                                event_type, event_data = self._camera.wait_for_event(400)
+                                if event_type == gp.GP_EVENT_FILE_ADDED:
+                                    paths[(event_data.folder, event_data.name)] = event_data
+                                elif event_type == gp.GP_EVENT_CAPTURE_COMPLETE:
+                                    if paths:
+                                        break
+                            except Exception:
+                                break
+
+                    # ── 5. TẢI FILE ẢNH VỀ CM4 ──
                     files = []
                     for path in list(paths.values()):
                         ext = path.name.lower().split('.')[-1]
@@ -708,16 +858,18 @@ class HybridCameraBackend:
         return [(filename, img_bytes, None)]
 
     def preview(self):
+        """Lấy 1 frame Live View JPEG từ máy ảnh thật qua gphoto2 capture_preview()."""
         if GPHOTO2_AVAILABLE and not self.use_real_hardware:
             self._try_init_real_camera()
 
-        if self.use_real_hardware:
+        if self.use_real_hardware and self._camera is not None:
             with self._lock:
                 try:
                     camera_file = self._camera.capture_preview()
+                    self._in_live_view = True
                     return bytes(camera_file.get_data_and_size())
-                except Exception:
-                    pass
+                except Exception as e:
+                    log.debug("Lỗi capture_preview trên máy ảnh: %s", e)
         return self._generate_simulated_image(width=640, height=424, title="CM4 Live View Stream")
 
     def _generate_simulated_image(self, width=1920, height=1080, title="AutoTimelapse CM4 Camera", camera_code="CAM-CM4"):
