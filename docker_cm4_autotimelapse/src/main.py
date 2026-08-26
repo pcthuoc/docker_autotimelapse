@@ -844,7 +844,9 @@ class CameraAgent:
 
         def on_message(client, userdata, msg):
             try:
-                raw = json.loads(msg.payload.decode())
+                payload_str = msg.payload.decode()
+                log.info("📩 [MQTT RECV] Nhận packet trên topic '%s': %s", msg.topic, payload_str[:120])
+                raw = json.loads(payload_str)
                 self.cmd_queue.put(raw)
             except Exception as exc:
                 log.error("Lỗi giải mã MQTT message: %s", exc)
