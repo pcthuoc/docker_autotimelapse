@@ -530,9 +530,11 @@ def get_fan_controller(bus_id: int = 1, address: int = 0x2F):
 
 def read_ads1115_voltages(bus_id: int = 1, address: int = 0x49) -> dict:
     """
-    Đọc điện áp Solar (A0/kênh 1) và Pin (A3/kênh 4) từ ADS1115 (0x49) trên I2C bus 1.
-    Cả 2 kênh đều sử dụng mạch cầu phân áp trở: R_dưới = 22kΩ, R_trên = 100kΩ.
-    Hệ số phân áp: (100k + 22k) / 22k = 122 / 22 = 5.54545...
+    Đọc điện áp từ chip ADS1115 (0x49) trên I2C bus 1:
+    - Kênh 2 (AIN2): Đo điện áp sạc từ 0V tới 6V (dùng thang đo PGA = +/-6.144V).
+    - Kênh Solar (A0/kênh 1): Đo điện áp Solar với hệ số phân áp trở.
+    - Kênh Pin (A3/kênh 4): Đo điện áp Pin với hệ số phân áp trở.
+    Hệ số phân áp chuẩn: (100k + 22k) / 22k = 122 / 22 = 5.54545...
     """
     try:
         import smbus2
@@ -540,23 +542,24 @@ def read_ads1115_voltages(bus_id: int = 1, address: int = 0x49) -> dict:
         smbus2 = None
 
     if smbus2 is None:
-        return {"battery_voltage": None, "solar_voltage": None}
+        return {"battery_voltage": None, "solar_voltage": None, "ads_ch2_voltage": None}
 
     # Hệ số trở chuẩn 22k / 100k
     default_scale = round((100.0 + 22.0) / 22.0, 3)  # 5.545
     bat_scale = float(os.environ.get("BATTERY_VOLTAGE_SCALE", str(default_scale)))
     sol_scale = float(os.environ.get("SOLAR_VOLTAGE_SCALE", str(default_scale)))
 
-    sol_channel = int(os.environ.get("ADS1115_SOLAR_CHANNEL", "2"))    # Kênh 3 (Chân A2 - Solar)
-    bat_channel = int(os.environ.get("ADS1115_BATTERY_CHANNEL", "3"))  # Kênh 4 (Chân A3 - Pin)
+    sol_channel = int(os.environ.get("ADS1115_SOLAR_CHANNEL", "0"))    # Kênh Solar (Mặc định A0)
+    bat_channel = int(os.environ.get("ADS1115_BATTERY_CHANNEL", "3"))  # Kênh Pin (Mặc định A3)
 
-    def _read_channel(bus, channel: int):
+    def _read_channel(bus, channel: int, fsr: float = 6.144):
         try:
             import time
             channel = max(0, min(3, channel))
             mux = (0x4 + channel) << 12
-            # OS=1, MUX=(4+ch), PGA=001 (+/-4.096V), MODE=1 (Single-shot), DR=100 (128SPS), COMP=0003
-            config = 0x8000 | mux | 0x0200 | 0x0100 | 0x0083
+            pga_bits = 0x0000 if fsr >= 6.0 else 0x0200
+            # OS=1, MUX=(4+ch), PGA, MODE=1 (Single-shot), DR=100 (128SPS), COMP=0003
+            config = 0x8000 | mux | pga_bits | 0x0100 | 0x0083
             write_cfg = smbus2.i2c_msg.write(address, [0x01, (config >> 8) & 0xFF, config & 0xFF])
             bus.i2c_rdwr(write_cfg)
             time.sleep(0.02)
@@ -569,7 +572,7 @@ def read_ads1115_voltages(bus_id: int = 1, address: int = 0x49) -> dict:
             raw = (data[0] << 8) | data[1]
             if raw > 32767:
                 raw -= 65536
-            v_pin = (raw / 32767.0) * 4.096
+            v_pin = (raw / 32767.0) * fsr
             return max(0.0, v_pin)
         except Exception as ex:
             log.warning("⚠️ ADS1115 channel %d read error: %s", channel, ex)
@@ -577,19 +580,27 @@ def read_ads1115_voltages(bus_id: int = 1, address: int = 0x49) -> dict:
 
     try:
         with smbus2.SMBus(bus_id) as bus:
-            v_sol_pin = _read_channel(bus, sol_channel)
-            v_bat_pin = _read_channel(bus, bat_channel)
+            # 1. Đọc kênh 2 (AIN2) - Đo điện áp sạc 0V -> 6V
+            v_ch2_pin = _read_channel(bus, 2, fsr=6.144)
+            # 2. Đọc kênh Pin A3 (qua cầu phân áp)
+            v_bat_pin = _read_channel(bus, bat_channel, fsr=4.096)
+            # 3. Đọc kênh Solar (A0 hoặc A2 qua cầu phân áp)
+            v_sol_pin = _read_channel(bus, sol_channel, fsr=4.096)
 
+            # Nếu Solar đọc ở A2 chưa nhân hệ số, nếu v_sol_pin đọc ở A0 hoặc A2:
             sol_v = round(v_sol_pin * sol_scale, 2) if v_sol_pin is not None else None
+            # Nếu kênh sol_channel trùng kênh 2, ta giữ sol_v theo scale
             bat_v = round(v_bat_pin * bat_scale, 2) if v_bat_pin is not None else None
+            v_ch2 = round(v_ch2_pin, 2) if v_ch2_pin is not None else 0.0
 
             return {
                 "battery_voltage": bat_v,
                 "solar_voltage": sol_v,
+                "ads_ch2_voltage": v_ch2,
             }
     except Exception as e:
         log.warning("⚠️ ADS1115 [bus %d, addr 0x%02X] read error: %s", bus_id, address, e)
-        return {"battery_voltage": None, "solar_voltage": None}
+        return {"battery_voltage": None, "solar_voltage": None, "ads_ch2_voltage": None}
 
 
 # ── TỔNG HỢP TELEMETRY ────────────────────────────────────────────────────────
@@ -597,7 +608,7 @@ def read_ads1115_voltages(bus_id: int = 1, address: int = 0x49) -> dict:
 def collect_telemetry(camera_code: str, is_powered: bool, use_real_hw: bool,
                       firmware_version: str = "cm4-autotimelapse-v2.0",
                       camera_info: dict = None) -> dict:
-    """Thu thập toàn bộ thông tin telemetry thực tế từ phần cứng CM4 (System + I2C sensors + Fan EMC2301)."""
+    """Thu thập toàn bộ thông tin telemetry thực tế từ phần cứng CM4 (System + I2C sensors + Fan EMC2301 + Solar Fan GPIO 19)."""
     sim = get_sim_info()
     net = get_network_info()
     mem = get_memory_info()
@@ -620,6 +631,19 @@ def collect_telemetry(camera_code: str, is_powered: bool, use_real_hw: bool,
 
     bat_v = adc_voltages.get("battery_voltage")
     sol_v = adc_voltages.get("solar_voltage")
+    ads_ch2_v = adc_voltages.get("ads_ch2_voltage")
+
+    # ── Điều khiển quạt tản nhiệt sạc GPIO 19 ─────────────────────────────────
+    # Điều kiện:
+    # 1. Ban ngày (7h - 16h): Kênh 2 > 4.5V HOẶC Solar > 15.0V
+    # 2. Ban đêm (ngoại lệ): VẪN BẬT nếu Kênh 2 > 4.5V VÀ Solar > 15.0V
+    try:
+        from solar_fan_controller import get_solar_fan_controller
+        solar_fan_ctrl = get_solar_fan_controller(pin=19)
+        solar_fan_info = solar_fan_ctrl.update(v_ads_ch2=ads_ch2_v, solar_voltage=sol_v) if solar_fan_ctrl else {}
+    except Exception as e:
+        log.warning("Lỗi cập nhật SolarFanController: %s", e)
+        solar_fan_info = {}
 
     bat_pct = None
     if bat_v is not None:
@@ -630,7 +654,9 @@ def collect_telemetry(camera_code: str, is_powered: bool, use_real_hw: bool,
         sol_pct = int(max(0.0, min(100.0, (sol_v / 18.0) * 100.0)))
 
     is_charging = False
-    if sol_v is not None and bat_v is not None:
+    if ads_ch2_v is not None and ads_ch2_v > 4.5:
+        is_charging = True
+    elif sol_v is not None and bat_v is not None:
         is_charging = sol_v > (bat_v + 0.5)
     elif sol_v is not None:
         is_charging = sol_v > 5.0
@@ -688,6 +714,11 @@ def collect_telemetry(camera_code: str, is_powered: bool, use_real_hw: bool,
         "is_charging": is_charging,
         "solar_voltage": sol_v,
         "solar_percent": sol_pct,
+        "ads_ch2_voltage": ads_ch2_v,
+
+        # Solar Cooling Fan (GPIO 19)
+        "solar_fan_running": solar_fan_info.get("fan_running", False),
+        "solar_fan_gpio": 19,
 
         # Metadata
         "firmware_version": firmware_version,

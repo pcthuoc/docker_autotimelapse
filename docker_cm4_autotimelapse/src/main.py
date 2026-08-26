@@ -983,6 +983,11 @@ class CameraAgent:
                 pass
 
         self.power_manager.cleanup()
+        try:
+            from solar_fan_controller import get_solar_fan_controller
+            get_solar_fan_controller().cleanup()
+        except Exception:
+            pass
         log.info("👋 Agent đã dừng hoàn toàn.")
 
 
