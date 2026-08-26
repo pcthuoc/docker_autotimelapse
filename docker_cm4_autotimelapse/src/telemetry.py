@@ -609,16 +609,17 @@ def read_ads1115_voltages(bus_id: int = 1, address: int = 0x49) -> dict:
 
     try:
         with smbus2.SMBus(bus_id) as bus:
-            # 1. Đọc Kênh 2 (Chân A1) - 5V SẠC qua cầu trở 20k/10k (scale 3.0, PGA=2)
-            v_5v_pin = _read_channel(bus, ch5v_channel, pga_gain=2)
+            # Dùng PGA=1 (+/-4.096V, FSR=4.096V) để đo dải rộng an toàn, không bị tràn trần 2.048V
+            # 1. Đọc Kênh 2 (Chân A1) - 5V SẠC qua cầu trở 20k/10k (scale 3.0)
+            v_5v_pin = _read_channel(bus, ch5v_channel, pga_gain=1)
             v_5v = round(v_5v_pin * ch2_scale, 2) if v_5v_pin is not None else 0.0
 
-            # 2. Đọc Kênh 3 (Chân A2) - SOLAR qua cầu trở 100k/13k (scale 8.6923, PGA=2)
-            v_sol_pin = _read_channel(bus, sol_channel, pga_gain=2)
+            # 2. Đọc Kênh 3 (Chân A2) - SOLAR qua cầu trở 100k/13k (scale 8.6923)
+            v_sol_pin = _read_channel(bus, sol_channel, pga_gain=1)
             sol_v = round(v_sol_pin * sol_scale, 2) if v_sol_pin is not None else None
 
-            # 3. Đọc Kênh 4 (Chân A3) - PIN qua cầu trở 47k/4.7k (scale 11.0, PGA=2)
-            v_bat_pin = _read_channel(bus, bat_channel, pga_gain=2)
+            # 3. Đọc Kênh 4 (Chân A3) - PIN qua cầu trở 47k/4.7k (scale 11.0)
+            v_bat_pin = _read_channel(bus, bat_channel, pga_gain=1)
             bat_v = round(v_bat_pin * bat_scale, 2) if v_bat_pin is not None else None
 
             return {
