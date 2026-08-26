@@ -720,19 +720,25 @@ class HybridCameraBackend:
                         log.info("📸 [CANON SHUTTER] Kích hoạt chụp ảnh qua Canon EOS Remote Release...")
                         af_success = False
 
-                        # Thử Shutter Release với AutoFocus (Press Full AF)
+                        # Bước 3a: Đảm bảo capturetarget = Internal RAM trước khi bấm màn trập
+                        try:
+                            cfg_ct = self._camera.get_config()
+                            w_ct, _ = self._find_widget(cfg_ct, ["capturetarget"])
+                            if w_ct and str(w_ct.get_value()) != "Internal RAM":
+                                w_ct.set_value("Internal RAM")
+                                self._camera.set_config(cfg_ct)
+                                time.sleep(0.2)
+                        except Exception as e_ct:
+                            log.debug("Lỗi set capturetarget: %s", e_ct)
+
+                        # Bước 3b: Thử Shutter Release với AutoFocus (Press Full AF)
                         try:
                             cfg = self._camera.get_config()
                             w_rel, _ = self._find_widget(cfg, ["eosremoterelease"])
                             if w_rel:
-                                # Đảm bảo target là Internal RAM
-                                w_ct, _ = self._find_widget(cfg, ["capturetarget"])
-                                if w_ct:
-                                    w_ct.set_value("Internal RAM")
-
                                 w_rel.set_value("Press Half AF")
                                 self._camera.set_config(cfg)
-                                time.sleep(0.4)
+                                time.sleep(0.3)
 
                                 cfg = self._camera.get_config()
                                 w_rel, _ = self._find_widget(cfg, ["eosremoterelease"])
@@ -746,7 +752,7 @@ class HybridCameraBackend:
                                 self._camera.set_config(cfg)
 
                                 # Polling event chờ file
-                                deadline = time.monotonic() + 4.0
+                                deadline = time.monotonic() + 3.0
                                 while time.monotonic() < deadline:
                                     ev_type, ev_data = self._camera.wait_for_event(300)
                                     if ev_type == gp.GP_EVENT_FILE_ADDED:
@@ -756,11 +762,17 @@ class HybridCameraBackend:
                         except Exception as e_af:
                             log.warning("⚠️ Lỗi Press Full AF (%s)", e_af)
 
-                        # Nếu Press Full AF không ra file (phòng tối, lens không khóa nét được ở One Shot AF),
+                        # Bước 3c: Nếu Press Full AF không ra file (phòng tối, lens không khóa nét được ở One Shot AF),
                         # tự động fallback sang Press Full MF (Manual Focus Release - cưỡng bức chụp ngay lập tức)
                         if not af_success or not paths:
                             log.info("🎯 [CANON MF FALLBACK] Thử bấm màn trập Manual Focus (Press Full MF)...")
                             try:
+                                # Xóa event tồn đọng
+                                while True:
+                                    ev_type, _ = self._camera.wait_for_event(50)
+                                    if ev_type == gp.GP_EVENT_TIMEOUT:
+                                        break
+
                                 cfg = self._camera.get_config()
                                 w_rel, _ = self._find_widget(cfg, ["eosremoterelease"])
                                 if w_rel:
