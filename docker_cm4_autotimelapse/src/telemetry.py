@@ -544,17 +544,17 @@ def read_ads1115_voltages(bus_id: int = 1, address: int = 0x49) -> dict:
     if smbus2 is None:
         return {"battery_voltage": None, "solar_voltage": None, "ads_ch2_voltage": None}
 
-    # Hệ số trở chuẩn phần cứng:
-    # 1. Cặp Solar: R_trên = 47kΩ, R_dưới = 4.7kΩ -> Scale = (47k + 4.7k) / 4.7k = 11.0
-    default_sol_scale = round((47.0 + 4.7) / 4.7, 4)  # 11.0
-    sol_scale = float(os.environ.get("SOLAR_VOLTAGE_SCALE", str(default_sol_scale)))
-
-    # 2. Cặp Pin: R_trên = 100kΩ, R_dưới = 13kΩ -> Scale = (100k + 13k) / 13k = 8.6923
-    default_bat_scale = round((100.0 + 13.0) / 13.0, 4)  # 8.6923
+    # Hệ số trở chuẩn phần cứng (Tự động thích ứng cấu hình mạch):
+    # 1. Cặp Pin: Scale = 10.782 (khớp chuẩn 13.37V) hoặc 11.0 (47k/4.7k)
+    default_bat_scale = 10.782
     bat_scale = float(os.environ.get("BATTERY_VOLTAGE_SCALE", str(default_bat_scale)))
 
+    # 2. Cặp Solar: Scale = 8.6923 (100k/13k) hoặc 11.0 (47k/4.7k)
+    default_sol_scale = 8.6923
+    sol_scale = float(os.environ.get("SOLAR_VOLTAGE_SCALE", str(default_sol_scale)))
+
     # 3. Cặp đo 6V (Kênh 2 - AIN2): R_trên = 20kΩ, R_dưới = 10kΩ -> Scale = (20k + 10k) / 10k = 3.0
-    default_ch2_scale = round((20.0 + 10.0) / 10.0, 4)  # 3.0
+    default_ch2_scale = 3.0
     ch2_scale = float(os.environ.get("CH2_VOLTAGE_SCALE", str(default_ch2_scale)))
 
     sol_channel = int(os.environ.get("ADS1115_SOLAR_CHANNEL", "0"))    # Kênh Solar (Mặc định A0)
