@@ -229,17 +229,17 @@ print('ISO hiện tại trên máy thật:', config2.get_child_by_name('iso').ge
 
 ### 1. Bảng Hệ Số Cầu Phân Áp Trở (ADC Resistor Dividers):
 
-| Ngõ Đo / Chức Năng | Kênh ADS1115 | Điện Trở Trên ($R_1$) | Điện Trở Dưới ($R_2$) | Công Thức Hệ Số (Scale) | Hệ Số Scale Chuẩn | Điện Áp Pin ADC Tối Đa |
+| Ngõ Đo / Chức Năng | Kênh ADS1115 | Điện Trở Trên ($R_1$) | Điện Trở Dưới ($R_2$) | Mã Trở SMD EIA-96 | Công Thức Hệ Số (Scale) | Hệ Số Scale Chuẩn |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|
-| **Đo 6V (Sạc Kênh 2)** | **AIN2** | **$20\text{ k}\Omega$** | **$10\text{ k}\Omega$** | $\frac{20 + 10}{10} = \frac{30}{10}$ | **`3.0000`** | $V_{in}=6.0\text{V} \rightarrow V_{pin}=2.0\text{V}$ |
-| **Đo Năng Lượng Solar** | **AIN0** | **$47\text{ k}\Omega$** | **$4.7\text{ k}\Omega$** | $\frac{47 + 4.7}{4.7} = \frac{51.7}{4.7}$ | **`11.0000`** | $V_{in}=25.0\text{V} \rightarrow V_{pin}=2.27\text{V}$ |
-| **Đo Điện Áp Pin (Bat)** | **AIN3** | **$100\text{ k}\Omega$** | **$13\text{ k}\Omega$** | $\frac{100 + 13}{13} = \frac{113}{13}$ | **`8.6923`** | $V_{in}=14.8\text{V} \rightarrow V_{pin}=1.70\text{V}$ |
+| **Đo 6V (Sạc Kênh 2/3)** | **AIN2 (Chân 3)** | **$20\text{ k}\Omega$** | **$10\text{ k}\Omega$** | `203` / `103` | $\frac{20 + 10}{10} = \frac{30}{10}$ | **`3.0000`** |
+| **Đo Điện Áp Pin (Bat)** | **AIN3 (Chân 4)** | **$47\text{ k}\Omega$** | **$4.7\text{ k}\Omega$** | `473` / `472` | $\frac{47 + 4.7}{4.7} = \frac{51.7}{4.7}$ | **`11.0000`** |
+| **Đo Năng Lượng Solar** | **AIN0 (Chân 1)** | **$100\text{ k}\Omega$** | **$13\text{ k}\Omega$** | `01D` / `12C` | $\frac{100 + 13}{13} = \frac{113}{13}$ | **`8.6923`** |
 
 #### 📐 Công Thức Tính Điện Áp Thực Tế:
 $$V_{in} = V_{\text{ADC\_pin}} \times \text{Scale}$$
-- **Kênh 2 ($V_{in\_ch2}$):** $V_{\text{pin}} \times 3.0$
-- **Solar ($V_{solar}$):** $V_{\text{pin}} \times 11.0$
-- **Battery ($V_{bat}$):** $V_{\text{pin}} \times 8.6923$
+- **Pin ($V_{bat}$ - Kênh A3):** $V_{\text{pin}} \times 11.0000 \quad \rightarrow 1.215\text{V} \times 11.0 = \mathbf{13.37\text{V}}$
+- **Solar ($V_{solar}$ - Kênh A0):** $V_{\text{pin}} \times 8.6923 \quad \rightarrow 2.400\text{V} \times 8.6923 = \mathbf{20.86\text{V}}$
+- **Kênh 6V ($V_{in\_ch2}$ - Kênh A2):** $V_{\text{pin}} \times 3.0000 \quad \rightarrow 1.667\text{V} \times 3.0 = \mathbf{5.00\text{V}}$
 
 ---
 
