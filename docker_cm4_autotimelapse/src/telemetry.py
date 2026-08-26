@@ -545,20 +545,21 @@ def read_ads1115_voltages(bus_id: int = 1, address: int = 0x49) -> dict:
         return {"battery_voltage": None, "solar_voltage": None, "ads_ch2_voltage": None}
 
     # Hệ số trở chuẩn phần cứng:
-    # 1. Kênh Pin (Kênh 4 - A3): R_trên = 47kΩ, R_dưới = 4.7kΩ -> Scale = (47k + 4.7k) / 4.7k = 11.0
+    # 1. Kênh 4 (Chân A3) - PIN: R_trên = 47kΩ, R_dưới = 4.7kΩ -> Scale = (47k + 4.7k) / 4.7k = 11.0
     default_bat_scale = 11.0
     bat_scale = float(os.environ.get("BATTERY_VOLTAGE_SCALE", str(default_bat_scale)))
 
-    # 2. Kênh Solar (A0): R_trên = 100kΩ (01D), R_dưới = 13kΩ (12C) -> Scale = (100k + 13k) / 13k = 8.6923
+    # 2. Kênh 3 (Chân A2) - SOLAR: R_trên = 100kΩ (01D), R_dưới = 13kΩ (12C) -> Scale = (100k + 13k) / 13k = 8.6923
     default_sol_scale = round((100.0 + 13.0) / 13.0, 4)  # 8.6923
     sol_scale = float(os.environ.get("SOLAR_VOLTAGE_SCALE", str(default_sol_scale)))
 
-    # 3. Cặp đo 6V (Kênh 3 - A2): R_trên = 20kΩ, R_dưới = 10kΩ -> Scale = (20k + 10k) / 10k = 3.0
+    # 3. Kênh 2 (Chân A1) - 5V SẠC: R_trên = 20kΩ, R_dưới = 10kΩ -> Scale = (20k + 10k) / 10k = 3.0
     default_ch2_scale = 3.0
     ch2_scale = float(os.environ.get("CH2_VOLTAGE_SCALE", str(default_ch2_scale)))
 
-    sol_channel = int(os.environ.get("ADS1115_SOLAR_CHANNEL", "0"))    # Kênh Solar (Chân A0)
-    bat_channel = int(os.environ.get("ADS1115_BATTERY_CHANNEL", "3"))  # Kênh Pin - Kênh 4 (Chân A3)
+    ch5v_channel = int(os.environ.get("ADS1115_5V_CHANNEL", "1"))      # Kênh 2 (Chân A1 - 5V Sạc)
+    sol_channel = int(os.environ.get("ADS1115_SOLAR_CHANNEL", "2"))    # Kênh 3 (Chân A2 - Solar)
+    bat_channel = int(os.environ.get("ADS1115_BATTERY_CHANNEL", "3"))  # Kênh 4 (Chân A3 - Pin)
 
     def _read_channel(bus, channel: int, pga_gain: int = 2):
         """
@@ -608,22 +609,22 @@ def read_ads1115_voltages(bus_id: int = 1, address: int = 0x49) -> dict:
 
     try:
         with smbus2.SMBus(bus_id) as bus:
-            # 1. Đọc kênh 2 (AIN2) - Đo điện áp sạc 6V qua cầu trở 20k/10k (scale 3.0, PGA=2)
-            v_ch2_pin = _read_channel(bus, 2, pga_gain=2)
-            v_ch2 = round(v_ch2_pin * ch2_scale, 2) if v_ch2_pin is not None else 0.0
+            # 1. Đọc Kênh 2 (Chân A1) - 5V SẠC qua cầu trở 20k/10k (scale 3.0, PGA=2)
+            v_5v_pin = _read_channel(bus, ch5v_channel, pga_gain=2)
+            v_5v = round(v_5v_pin * ch2_scale, 2) if v_5v_pin is not None else 0.0
 
-            # 2. Đọc kênh Pin A3 (qua cầu phân áp 100k/13k, scale 8.6923, PGA=2)
-            v_bat_pin = _read_channel(bus, bat_channel, pga_gain=2)
-            bat_v = round(v_bat_pin * bat_scale, 2) if v_bat_pin is not None else None
-
-            # 3. Đọc kênh Solar A0 (qua cầu phân áp 47k/4.7k, scale 11.0, PGA=2)
+            # 2. Đọc Kênh 3 (Chân A2) - SOLAR qua cầu trở 100k/13k (scale 8.6923, PGA=2)
             v_sol_pin = _read_channel(bus, sol_channel, pga_gain=2)
             sol_v = round(v_sol_pin * sol_scale, 2) if v_sol_pin is not None else None
+
+            # 3. Đọc Kênh 4 (Chân A3) - PIN qua cầu trở 47k/4.7k (scale 11.0, PGA=2)
+            v_bat_pin = _read_channel(bus, bat_channel, pga_gain=2)
+            bat_v = round(v_bat_pin * bat_scale, 2) if v_bat_pin is not None else None
 
             return {
                 "battery_voltage": bat_v,
                 "solar_voltage": sol_v,
-                "ads_ch2_voltage": v_ch2,
+                "ads_ch2_voltage": v_5v,
             }
     except Exception as e:
         log.warning("⚠️ ADS1115 [bus %d, addr 0x%02X] read error: %s", bus_id, address, e)
