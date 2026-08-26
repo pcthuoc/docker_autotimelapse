@@ -560,17 +560,33 @@ def read_ads1115_voltages(bus_id: int = 1, address: int = 0x49) -> dict:
     sol_channel = int(os.environ.get("ADS1115_SOLAR_CHANNEL", "0"))    # Kênh Solar (Mặc định A0)
     bat_channel = int(os.environ.get("ADS1115_BATTERY_CHANNEL", "3"))  # Kênh Pin (Mặc định A3)
 
-    def _read_channel(bus, channel: int, fsr: float = 4.096):
+    def _read_channel(bus, channel: int, pga_gain: int = 2):
+        """
+        Đọc kênh ADS1115 với Gain chuẩn:
+        - pga_gain = 2: Dải đo +/-2.048V (FSR = 2.048V, 1 LSB = 0.0000625V = 62.5 uV) -> Config PGA bits = 0x0400
+        - pga_gain = 1: Dải đo +/-4.096V (FSR = 4.096V, 1 LSB = 0.0001250V = 125.0 uV) -> Config PGA bits = 0x0200
+        - pga_gain = 0: Dải đo +/-6.144V (FSR = 6.144V, 1 LSB = 0.0001875V = 187.5 uV) -> Config PGA bits = 0x0000
+        """
         try:
             import time
             channel = max(0, min(3, channel))
             mux = (0x4 + channel) << 12
-            pga_bits = 0x0000 if fsr >= 6.0 else 0x0200
+
+            if pga_gain == 2:
+                pga_bits = 0x0400  # PGA = 2 (+/-2.048V)
+                fsr = 2.048
+            elif pga_gain == 1:
+                pga_bits = 0x0200  # PGA = 1 (+/-4.096V)
+                fsr = 4.096
+            else:
+                pga_bits = 0x0000  # PGA = 2/3 (+/-6.144V)
+                fsr = 6.144
+
             # OS=1, MUX=(4+ch), PGA, MODE=1 (Single-shot), DR=100 (128SPS), COMP=0003
             config = 0x8000 | mux | pga_bits | 0x0100 | 0x0083
             write_cfg = smbus2.i2c_msg.write(address, [0x01, (config >> 8) & 0xFF, config & 0xFF])
             bus.i2c_rdwr(write_cfg)
-            time.sleep(0.02)
+            time.sleep(0.025)
 
             write_ptr = smbus2.i2c_msg.write(address, [0x00])
             read_val = smbus2.i2c_msg.read(address, 2)
@@ -580,24 +596,28 @@ def read_ads1115_voltages(bus_id: int = 1, address: int = 0x49) -> dict:
             raw = (data[0] << 8) | data[1]
             if raw > 32767:
                 raw -= 65536
+            if raw < 0:
+                raw = 0
+
+            # V_pin = raw * (fsr / 32767.0) (với PGA=2 tương đương raw * 0.0000625 V)
             v_pin = (raw / 32767.0) * fsr
-            return max(0.0, v_pin)
+            return v_pin
         except Exception as ex:
             log.warning("⚠️ ADS1115 channel %d read error: %s", channel, ex)
             return None
 
     try:
         with smbus2.SMBus(bus_id) as bus:
-            # 1. Đọc kênh 2 (AIN2) - Đo điện áp sạc 5V qua cầu trở 20k/10k (scale 3.0)
-            v_ch2_pin = _read_channel(bus, 2, fsr=4.096)
+            # 1. Đọc kênh 2 (AIN2) - Đo điện áp sạc 6V qua cầu trở 20k/10k (scale 3.0, PGA=2)
+            v_ch2_pin = _read_channel(bus, 2, pga_gain=2)
             v_ch2 = round(v_ch2_pin * ch2_scale, 2) if v_ch2_pin is not None else 0.0
 
-            # 2. Đọc kênh Pin A3 (qua cầu phân áp 22k/100k, scale 5.545)
-            v_bat_pin = _read_channel(bus, bat_channel, fsr=4.096)
+            # 2. Đọc kênh Pin A3 (qua cầu phân áp 100k/13k, scale 8.6923, PGA=2)
+            v_bat_pin = _read_channel(bus, bat_channel, pga_gain=2)
             bat_v = round(v_bat_pin * bat_scale, 2) if v_bat_pin is not None else None
 
-            # 3. Đọc kênh Solar A0 (qua cầu phân áp 22k/100k, scale 5.545)
-            v_sol_pin = _read_channel(bus, sol_channel, fsr=4.096)
+            # 3. Đọc kênh Solar A0 (qua cầu phân áp 47k/4.7k, scale 11.0, PGA=2)
+            v_sol_pin = _read_channel(bus, sol_channel, pga_gain=2)
             sol_v = round(v_sol_pin * sol_scale, 2) if v_sol_pin is not None else None
 
             return {
