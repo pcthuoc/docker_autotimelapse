@@ -73,13 +73,13 @@ docker compose down -v && docker rm -f $(docker ps -a -q) 2>/dev/null || true &&
 docker compose up -d --build
 ```
 
-### 4️⃣ Lệnh 4: Tạo Tài Khoản Admin `pcthuoc` & Bucket S3 `media`
+### 4️⃣ Lệnh 4: Tạo tài khoản Admin và Bucket S3 `media`
 ```bash
-# Tạo Superuser pcthuoc (Mật khẩu: AdminPass2026!)
-docker exec atl-site python manage.py shell -c "from django.contrib.auth.models import User; u, created = User.objects.get_or_create(username='pcthuoc', defaults={'email': 'pcthuoch@gmail.com', 'is_staff': True, 'is_superuser': True}); u.set_password('AdminPass2026!'); u.is_staff = True; u.is_superuser = True; u.is_active = True; u.save(); print('SUPERUSER PCTHUOC CREATED!')"
+# Lệnh tương tác, không ghi username/password thật vào source.
+docker exec -it atl-site python manage.py createsuperuser
 
-# Tạo Bucket media trên SeaweedFS S3
-docker exec atl-site python manage.py shell -c "import boto3; admin_s3 = boto3.client('s3', endpoint_url='http://seaweed-filer:8333', aws_access_key_id='atl_admin_98568b04f027', aws_secret_access_key='MDr62YtQcdK-_DHdiiMbuC6OjFnIjlVWSJT5gDC8qiA'); admin_s3.create_bucket(Bucket='media'); print('BUCKET MEDIA CREATED!')"
+# Kiểm tra/tạo bucket bằng credential lấy từ environment/site.env.
+docker exec atl-site python manage.py shell -c "from core.utils.storage import ensure_bucket; print(ensure_bucket())"
 ```
 
 ### 5️⃣ Lệnh 5: Chạy Kiểm Thử Tự Động Toàn Bộ Hệ Thống
@@ -187,5 +187,4 @@ Hệ thống hỗ trợ cơ chế hoạt động **2 Lõi vật lý**: **ESP32-S
 - `cm4_power_state`: Trạng thái nguồn CM4 (`off`, `powering_on`, `running`, `shutting_down`).
 - `cm4_last_seen_at`: Lần cuối CM4 gửi Telemetry / Thực thi nhiệm vụ.
 - `sim_active_node`: Nút đang giữ module SIM (`esp32` via UART / `cm4` via USB).
-
 

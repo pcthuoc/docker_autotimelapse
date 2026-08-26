@@ -17,7 +17,7 @@ services:
       - "/dev/bus/usb:/dev/bus/usb"
       - "/dev/gpiomem:/dev/gpiomem"
       - "/dev/mem:/dev/mem"
-      - "/dev/i2c-10:/dev/i2c-10"
+      - "/dev/i2c-1:/dev/i2c-1"
     volumes:
       - ./src:/app/src
       - ${DATA_DIR:-./data}/offline_queue:/app/offline_queue
@@ -41,15 +41,16 @@ services:
       - AUTO_CAPTURE_ON_BOOT=${AUTO_CAPTURE_ON_BOOT:-false}
       - SHUTDOWN_DELAY_SEC=${SHUTDOWN_DELAY_SEC:-3.0}
       - TELEMETRY_INTERVAL=${TELEMETRY_INTERVAL:-30}
+      - I2C_BUS_ID=${I2C_BUS_ID:-1}
+      - EMC2301_I2C_ADDR=${EMC2301_I2C_ADDR:-0x2F}
+      - ADS1115_I2C_ADDR=${ADS1115_I2C_ADDR:-0x49}
+      - ADS1115_SOLAR_CHANNEL=${ADS1115_SOLAR_CHANNEL:-2}
+      - ADS1115_BATTERY_CHANNEL=${ADS1115_BATTERY_CHANNEL:-3}
+      - BATTERY_VOLTAGE_SCALE=${BATTERY_VOLTAGE_SCALE:-5.545}
+      - SOLAR_VOLTAGE_SCALE=${SOLAR_VOLTAGE_SCALE:-5.545}
+      - FAN_TEMP_OFF=${FAN_TEMP_OFF:-15.0}
+      - FAN_TEMP_MID=${FAN_TEMP_MID:-25.0}
+      - FAN_TEMP_HIGH=${FAN_TEMP_HIGH:-35.0}
       - OFFLINE_QUEUE_DIR=${OFFLINE_QUEUE_DIR:-/app/offline_queue}
       - OFFLINE_RETRY_INTERVAL=${OFFLINE_RETRY_INTERVAL:-60}
 
-  portainer:
-    image: portainer/portainer-ce:latest
-    container_name: portainer
-    restart: unless-stopped
-    ports:
-      - "9000:9000"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - ${DATA_DIR:-./data}/portainer_data:/data

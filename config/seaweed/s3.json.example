@@ -1,0 +1,20 @@
+{
+  "identities": [
+    {
+      "name": "api-service",
+      "credentials": [
+        {
+          "accessKey": "replace-with-seaweed-access-key",
+          "secretKey": "replace-with-seaweed-secret-key"
+        }
+      ],
+      "actions": [
+        "Read:media",
+        "Write:media",
+        "List:media",
+        "Delete:media",
+        "Tagging:media"
+      ]
+    }
+  ]
+}

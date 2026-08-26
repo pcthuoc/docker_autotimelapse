@@ -595,7 +595,8 @@ def read_ads1115_voltages(bus_id: int = 1, address: int = 0x49) -> dict:
 # ── TỔNG HỢP TELEMETRY ────────────────────────────────────────────────────────
 
 def collect_telemetry(camera_code: str, is_powered: bool, use_real_hw: bool,
-                      firmware_version: str = "cm4-autotimelapse-v2.0") -> dict:
+                      firmware_version: str = "cm4-autotimelapse-v2.0",
+                      camera_info: dict = None) -> dict:
     """Thu thập toàn bộ thông tin telemetry thực tế từ phần cứng CM4 (System + I2C sensors + Fan EMC2301)."""
     sim = get_sim_info()
     net = get_network_info()
@@ -634,6 +635,9 @@ def collect_telemetry(camera_code: str, is_powered: bool, use_real_hw: bool,
     elif sol_v is not None:
         is_charging = sol_v > 5.0
 
+    # Camera info (model, brand, serial, lens) — từ HybridCameraBackend
+    cam = camera_info or {}
+
     return {
         # Camera status
         "node": "cm4",
@@ -641,6 +645,12 @@ def collect_telemetry(camera_code: str, is_powered: bool, use_real_hw: bool,
         "cm4_power_state": "running",
         "camera_gpio_power": "ON" if is_powered else "OFF",
         "camera_hw_mode": "gphoto2_usb" if use_real_hw else "simulated_pil",
+        # Camera identification (Canon 6D/5D/7D, Nikon, Sony, v.v.)
+        "camera_brand": cam.get("brand", "Unknown"),
+        "camera_model": cam.get("model", "Unknown"),
+        "camera_serial": cam.get("serial", "Unknown"),
+        "camera_lens": cam.get("lens", "Unknown"),
+        "camera_is_real": cam.get("is_real", False),
 
         # System resources & Environment sensors
         "temperature_c": env_temp,

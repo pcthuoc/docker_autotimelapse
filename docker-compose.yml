@@ -1,7 +1,32 @@
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   redis:
     container_name: atl-redis
     image: redis:alpine
+    restart: unless-stopped
+    command: >
+      redis-server
+        --maxmemory 128mb
+        --maxmemory-policy noeviction
+        --appendonly yes
+        --appendfsync everysec
+    volumes:
+      - redis_data:/data
+    deploy:
+      resources:
+        limits:
+          memory: 192M
+    networks: [app-net]
+    logging: *default-logging
+
+  redis-cache:
+    container_name: atl-redis-cache
+    image: redis:7-alpine
     restart: unless-stopped
     command: >
       redis-server
@@ -11,8 +36,9 @@ services:
     deploy:
       resources:
         limits:
-          memory: 192M
+          memory: 160M
     networks: [app-net]
+    logging: *default-logging
 
   mosquitto:
     container_name: atl-mosquitto
@@ -28,6 +54,7 @@ services:
     env_file:
       - ./environment/site.env
     networks: [app-net]
+    logging: *default-logging
 
   site:
     container_name: atl-site
@@ -49,6 +76,8 @@ services:
       - ./environment/site.env
     environment:
       DJANGO_SETTINGS_MODULE: autotimelapse.settings
+      REDIS_BROKER_URL: redis://redis:6379
+      REDIS_CACHE_URL: redis://redis-cache:6379
     deploy:
       resources:
         limits:
@@ -58,8 +87,10 @@ services:
     depends_on:
       - postgres
       - redis
+      - redis-cache
       - mosquitto
       - seaweed-filer
+    logging: *default-logging
 
   nginx:
     container_name: atl-nginx
@@ -75,6 +106,7 @@ services:
       - ./repo/frontend/dist:/frontend:ro
     networks: [app-net, seaweed-net]
     depends_on: [site, seaweed-filer]
+    logging: *default-logging
 
   mqtt_service:
     container_name: atl-mqtt-service
@@ -92,8 +124,11 @@ services:
       - ./environment/site.env
     environment:
       DJANGO_SETTINGS_MODULE: autotimelapse.settings
+      REDIS_BROKER_URL: redis://redis:6379
+      REDIS_CACHE_URL: redis://redis-cache:6379
     networks: [app-net]
     depends_on: [postgres, redis, mosquitto]
+    logging: *default-logging
 
   celery_worker:
     container_name: atl-celery-worker
@@ -107,11 +142,14 @@ services:
     command: celery -A autotimelapse worker -l info -Q default,archive -c 4
     volumes:
       - ./repo/backend:/app
+      - ./data/postgres-backup:/backup:ro
     working_dir: /app
     env_file:
       - ./environment/site.env
     environment:
       DJANGO_SETTINGS_MODULE: autotimelapse.settings
+      REDIS_BROKER_URL: redis://redis:6379
+      REDIS_CACHE_URL: redis://redis-cache:6379
     deploy:
       resources:
         limits:
@@ -119,6 +157,7 @@ services:
           memory: 512M
     networks: [app-net, seaweed-net]
     depends_on: [postgres, redis, site]
+    logging: *default-logging
 
   celery_render:
     container_name: atl-celery-render
@@ -138,13 +177,16 @@ services:
       - ./environment/site.env
     environment:
       DJANGO_SETTINGS_MODULE: autotimelapse.settings
+      REDIS_BROKER_URL: redis://redis:6379
+      REDIS_CACHE_URL: redis://redis-cache:6379
     deploy:
       resources:
         limits:
           cpus: "2.0"
-          memory: 1536M
+          memory: 2560M
     networks: [app-net, seaweed-net]
     depends_on: [postgres, redis, site]
+    logging: *default-logging
 
   celery_beat:
     container_name: atl-celery-beat
@@ -154,7 +196,7 @@ services:
     image: atl-site:latest
     init: true
     restart: unless-stopped
-    command: celery -A autotimelapse beat -l info
+    command: celery -A autotimelapse beat -l info --schedule /var/run/celery/celerybeat-schedule
     volumes:
       - ./repo/backend:/app
     working_dir: /app
@@ -162,8 +204,13 @@ services:
       - ./environment/site.env
     environment:
       DJANGO_SETTINGS_MODULE: autotimelapse.settings
+      REDIS_BROKER_URL: redis://redis:6379
+      REDIS_CACHE_URL: redis://redis-cache:6379
+    tmpfs:
+      - /var/run/celery
     networks: [app-net]
     depends_on: [postgres, redis, site]
+    logging: *default-logging
 
   # ----------------------------------------------------------------
   # TANG 1: Control plane - quan ly topology cua cluster
@@ -194,6 +241,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    logging: *default-logging
 
   # ----------------------------------------------------------------
   # TANG 2: Storage plane - noi luu file thuc te (anh, video)
@@ -221,6 +269,7 @@ services:
     depends_on: [seaweed-master]
     restart: unless-stopped
     stop_grace_period: 30s
+    logging: *default-logging
 
   # ----------------------------------------------------------------
   # TANG 3: Access plane - filesystem view + S3 gateway
@@ -252,6 +301,7 @@ services:
     depends_on: [seaweed-master, seaweed-volume]
     restart: unless-stopped
     stop_grace_period: 30s
+    logging: *default-logging
 
   # ----------------------------------------------------------------
   # DB plane - metadata store
@@ -274,6 +324,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    logging: *default-logging
 
   # pg_dump hàng ngày 01:00, giữ 7 bản gần nhất
   postgres-backup:
@@ -282,6 +333,8 @@ services:
     restart: unless-stopped
     env_file:
       - ./environment/site.env
+    environment:
+      TZ: Asia/Ho_Chi_Minh
     volumes:
       - ./data/postgres-backup:/backup
     networks:
@@ -292,17 +345,22 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
+        last_backup_day=""
         while true; do
-          sleep 3600
-          if [ "$$(date +%%H)" = "01" ]; then
+          current_day="$$(date +%Y%m%d)"
+          if [ "$$(date +%H)" = "01" ] && [ "$$last_backup_day" != "$$current_day" ]; then
             PGPASSWORD=$$POSTGRES_PASSWORD pg_dump -h postgres -U $$POSTGRES_USER -d $$POSTGRES_DB -Fc \
-              -f /backup/atl_$$(date +%%Y%%m%%d_%%H%%M).dump \
+              -f /backup/atl_$$(date +%Y%m%d_%H%M).dump \
               && ls -t /backup/*.dump 2>/dev/null | tail -n +8 | xargs -r rm -f
+            last_backup_day="$$current_day"
           fi
+          sleep 300
         done
+    logging: *default-logging
 
 volumes:
   static_data:
+  redis_data:
 
 networks:
   app-net:

@@ -555,6 +555,7 @@ class CameraAgent:
                 is_powered=self.power_manager.is_powered,
                 use_real_hw=self.backend.use_real_hardware,
                 firmware_version=FIRMWARE_VERSION,
+                camera_info=self.backend._detected_camera_info,
             )
             payload["threads"] = self.watchdog.status_report()
 
@@ -639,12 +640,21 @@ class CameraAgent:
                     log.info("🔌 Máy ảnh đang TẮT — Tự động BẬT NGUỒN để cài đặt thông số...")
                     self.power_manager.power_on()
                     time.sleep(self.power_manager.warmup_delay)
+                self.operating_mode = "interactive"
                 applied, caps, mismatches = self.backend.set_settings(payload)
                 resp = {"type": cmd, "request_id": rid, "status": "ok",
                         "data": {"requested": payload, "applied": applied,
-                                 "capabilities": caps, "mismatches": mismatches}}
+                                 "capabilities": caps, "mismatches": mismatches,
+                                 "camera_power": "on" if self.power_manager.is_powered else "off"}}
 
             elif cmd in ("get_settings", "get_capabilities", "get_status"):
+                # Khi bấm "Pull from device" (get_settings / get_capabilities): tự động bật nguồn nếu đang tắt
+                if cmd in ("get_settings", "get_capabilities") and not self.power_manager.is_powered:
+                    log.info("🔌 Máy ảnh đang TẮT — Tự động BẬT NGUỒN để kéo thông số phần cứng...")
+                    self.power_manager.power_on()
+                    time.sleep(self.power_manager.warmup_delay)
+                    self.operating_mode = "interactive"
+
                 applied, caps = self.backend.get_settings()
                 resp = {"type": cmd, "request_id": rid, "status": "ok",
                         "data": {"online": True, "applied": applied, "capabilities": caps,
@@ -694,10 +704,23 @@ class CameraAgent:
                                  "fps": self.live_fps}}
 
             elif cmd == "stop_live_view":
+                log.info("🛑 [LIVE VIEW] Dừng luồng Live View...")
                 self.live_session_id = None
-                if not self.always_keep_power:
-                    self.backend.disconnect_real_camera()
-                    self.power_manager.power_off()
+                # Đóng live preview / viewfinder trên camera nếu đang mở
+                if self.backend and self.backend.use_real_hardware and self.backend._camera:
+                    try:
+                        cfg = self.backend._camera.get_config()
+                        for vf_name in ("viewfinder", "evfmode"):
+                            try:
+                                w = cfg.get_child_by_name(vf_name)
+                                w.set_value(0)
+                                self.backend._camera.set_config(cfg)
+                                log.info("  ✓ Đã tắt viewfinder/evfmode trên máy ảnh")
+                                break
+                            except Exception:
+                                pass
+                    except Exception as e:
+                        log.debug("Lỗi tắt viewfinder: %s", e)
                 resp = {"type": cmd, "request_id": rid, "status": "ok",
                         "data": {"live_view": False}}
 

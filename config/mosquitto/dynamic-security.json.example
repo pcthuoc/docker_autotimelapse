@@ -1,0 +1,11 @@
+{
+  "clients": [],
+  "groups": [],
+  "roles": [],
+  "defaultACLAccess": {
+    "publishClientSend": false,
+    "publishClientReceive": true,
+    "subscribe": false,
+    "unsubscribe": true
+  }
+}

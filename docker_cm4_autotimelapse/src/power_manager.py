@@ -30,6 +30,7 @@ class CameraPowerManager:
         self.is_powered = False
         self.has_hardware_gpio = HAS_GPIO
         self._lock = threading.Lock()
+        self.last_power_off_time = 0.0
 
         self._init_gpio()
 
@@ -49,9 +50,16 @@ class CameraPowerManager:
             log.info("ℹ️ Không tìm thấy phần cứng RPi.GPIO. Quản lý nguồn chạy ở chế độ GIẢ LẬP (Simulated GPIO %d).", self.pin)
 
     def power_on(self):
-        """Bật nguồn máy ảnh và chờ phần cứng khởi động (warmup delay)."""
+        """Bật nguồn máy ảnh và chờ phần cứng khởi động (warmup delay), có chống nháy relay."""
         with self._lock:
             if not self.is_powered:
+                # Chống nháy relay: Nếu vừa tắt nguồn dưới 3s, chờ đủ 3s để tụ xả sạch tránh làm treo máy ảnh
+                elapsed = time.monotonic() - self.last_power_off_time
+                if elapsed < 3.0:
+                    wait_sec = 3.0 - elapsed
+                    log.info("🛡️ [ANTI-BOUNCE] Chờ %.1fs để tụ máy ảnh xả sạch trước khi bật lại...", wait_sec)
+                    time.sleep(wait_sec)
+
                 log.info("🔌 [POWER ON] Đang BẬT NGUỒN máy ảnh qua GPIO %d...", self.pin)
                 if self.has_hardware_gpio:
                     on_state = GPIO.HIGH if self.active_high else GPIO.LOW
@@ -75,10 +83,11 @@ class CameraPowerManager:
                     off_state = GPIO.LOW if self.active_high else GPIO.HIGH
                     GPIO.output(self.pin, off_state)
                 self.is_powered = False
+                self.last_power_off_time = time.monotonic()
                 return True
             return False
 
-    def hard_cycle_power(self, power_off_delay=2.5):
+    def hard_cycle_power(self, power_off_delay=3.0):
         """Tắt nguồn GPIO 16, chờ delay rồi bật lại để khởi động lại máy ảnh khi USB kẹt."""
         log.warning("🔄 [HARD POWER CYCLE] Tiến hành khởi động lại nguồn máy ảnh qua GPIO %d...", self.pin)
         self.power_off()

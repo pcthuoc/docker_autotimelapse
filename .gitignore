@@ -19,3 +19,10 @@ data/
 environment/*.env
 !environment/*.env.example
 !environment/local_settings.py.example
+
+# Runtime secrets/configs: keep local files, never commit credentials/keys
+environment/local_settings.py
+config/nginx/ssl/*.key
+config/mosquitto/dynamic-security.json
+config/mosquitto/dynamic-security.json.bak
+config/seaweed/s3.json

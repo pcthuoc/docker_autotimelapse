@@ -78,19 +78,55 @@ def is_camera_usb_device(dev_path: str) -> bool:
     return False
 
 
-def reset_usb_device_path(dev_path: str) -> bool:
-    """Gửi tín hiệu USBDEVFS_RESET ioctl nếu thiết bị đúng là MÁY ẢNH."""
+def reset_usb_device_path(dev_path: str, post_reset_delay: float = 0.5) -> bool:
+    """Gửi tín hiệu USBDEVFS_RESET ioctl nếu thiết bị đúng là MÁY ẢNH.
+    Canon EOS cần post_reset_delay lâu hơn Nikon/Sony vì USB PTP re-enum chậm hơn.
+    """
     if not os.path.exists(dev_path):
         return False
 
     if not is_camera_usb_device(dev_path):
         return False
 
+    # Detect Canon để áp dụng delay phù hợp
+    vendor_name = "Camera"
     try:
-        log.info("🔄 [USB RESET] Reset cổng USB máy ảnh phần cứng: %s...", dev_path)
+        parts = dev_path.split("/")
+        if len(parts) >= 2:
+            bus_num, dev_num = int(parts[-2]), int(parts[-1])
+            sys_usb_dir = "/sys/bus/usb/devices"
+            if os.path.exists(sys_usb_dir):
+                for dev_name in os.listdir(sys_usb_dir):
+                    vendor_file = os.path.join(sys_usb_dir, dev_name, "idVendor")
+                    busnum_file = os.path.join(sys_usb_dir, dev_name, "busnum")
+                    devnum_file = os.path.join(sys_usb_dir, dev_name, "devnum")
+                    if all(os.path.exists(f) for f in [vendor_file, busnum_file, devnum_file]):
+                        with open(busnum_file) as f:
+                            b = int(f.read().strip())
+                        with open(devnum_file) as f:
+                            d = int(f.read().strip())
+                        if b == bus_num and d == dev_num:
+                            with open(vendor_file) as f:
+                                vid = f.read().strip().lower()
+                            if vid == "04a9":
+                                vendor_name = "Canon"
+                                post_reset_delay = max(post_reset_delay, 2.0)  # Canon cần 2s sau reset
+                            elif vid == "04b0":
+                                vendor_name = "Nikon"
+                            elif vid == "054c":
+                                vendor_name = "Sony"
+                            break
+    except Exception:
+        pass
+
+    try:
+        log.info("🔄 [USB RESET] Reset cổng USB máy ảnh %s phần cứng: %s...", vendor_name, dev_path)
         with open(dev_path, 'w', os.O_WRONLY) as f:
             fcntl.ioctl(f, USBDEVFS_RESET, 0)
-        log.info("✅ [USB RESET] Reset máy ảnh %s thành công!", dev_path)
+        if post_reset_delay > 0:
+            import time
+            time.sleep(post_reset_delay)
+        log.info("✅ [USB RESET] Reset máy ảnh %s %s thành công! (delay=%.1fs)", vendor_name, dev_path, post_reset_delay)
         return True
     except Exception as e:
         log.warning("⚠️ Không thể reset USB máy ảnh %s: %s", dev_path, e)

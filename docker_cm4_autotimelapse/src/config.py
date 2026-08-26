@@ -20,6 +20,9 @@ POWER_ACTIVE_HIGH  = os.getenv("POWER_ACTIVE_HIGH", "true").lower() in ("true", 
 WARMUP_DELAY_SEC   = float(os.getenv("WARMUP_DELAY_SEC", "10.0"))
 ALWAYS_KEEP_POWER  = os.getenv("ALWAYS_KEEP_POWER", "false").lower() in ("true", "1", "yes")
 
+# Canon EOS Boot chậm hơn Nikon qua USB PTP — thêm delay phụ khi detect Canon
+CANON_EOS_WARMUP_EXTRA_SEC = float(os.getenv("CANON_EOS_WARMUP_EXTRA_SEC", "5.0"))
+
 # Cấu hình I2C Bus & Cảm biến (SHT20, ADS1115, EMC2301 Fan Controller)
 I2C_BUS_ID             = int(os.getenv("I2C_BUS_ID", "1"))
 EMC2301_I2C_ADDR       = int(os.getenv("EMC2301_I2C_ADDR", "0x2F"), 16) if os.getenv("EMC2301_I2C_ADDR") else 0x2F
@@ -53,25 +56,49 @@ SHUTDOWN_DELAY_SEC          = float(os.getenv("SHUTDOWN_DELAY_SEC", "3.0"))
 # Lưu: force_power_on, missed_capture_flag, last_capture_ts
 EC25_STATE_FILE = os.getenv("EC25_STATE_FILE", "/app/offline_queue/ec25_state.json")
 
-# Danh sách thông số máy ảnh hỗ trợ - Đa dòng máy (Canon EOS, Nikon, Sony, v.v.)
+# Danh sách thông số máy ảnh hỗ trợ - Đa dòng máy (Canon EOS 6D/5D/7D, Nikon, Sony, v.v.)
 # Format: field_name -> (candidate_widget_names_tuple_or_list, is_writable)
+# Thứ tự candidates: Canon EOS → Nikon → Sony → Generic
 SETTING_SPECS = {
-    "iso":                   (["iso"], True),
-    "aperture":              (["aperture", "f-number", "fnumber"], True),
-    "shutter_speed":         (["shutterspeed", "shutterspeed2"], True),
-    "exposure_compensation": (["exposurecompensation"], True),
-    "white_balance":         (["whitebalance"], True),
+    "iso":                   (["iso", "eos-iso"], True),
+    "aperture":              (["aperture", "aperturevalue", "f-number", "fnumber"], True),
+    "shutter_speed":         (["shutterspeed", "eos-shutterspeed", "shutterspeed2"], True),
+    "exposure_compensation": (["exposurecompensation", "eos-exposurecompensation"], True),
+    "white_balance":         (["whitebalance", "eos-whitebalance"], True),
     "image_format":          (["imageformat", "imagequality", "imageformatsd", "imageformatcf"], True),
-    "image_size":            (["imagesize"], True),
+    "image_size":            (["aspectratio", "imagesize"], True),
+    "aspect_ratio":          (["aspectratio"], True),
     "focus_mode":            (["focusmode", "focusmode2"], True),
-    "autofocus":             (["autofocus"], True),
-    "capture_mode":          (["capturemode"], True),
+    "autofocus":             (["autofocus", "eosremoterelease"], True),
+    "manual_focus_drive":    (["manualfocusdrive"], True),
+    "capture_mode":          (["drivemode", "capturemode"], True),
     "capture_target":        (["capturetarget"], True),
     "high_iso_nr":           (["highisonr"], True),
     "long_exp_nr":           (["longexpnr"], True),
-    "liveview_af":           (["liveviewaffocus"], True),
+    "liveview_af":           (["liveviewsize", "liveviewaffocus"], True),
+    "liveview_size":         (["liveviewsize"], True),
     "exposure_mode":         (["autoexposuremode", "expprogram"], False),
     "focus_switch":          (["focusmode", "focusmode2"], False),
+    # Canon EOS specific settings (quan trọng cho timelapse 6D/5D/7D)
+    "drivemode":             (["drivemode"], True),
+    "mirror_lockup":         (["mirrorlock", "eosmirrorlock", "mirrorlockup"], True),
+    "auto_power_off":        (["autopoweroff", "eosautopoweroff"], True),
+    "battery_level":         (["batterylevel", "eosbatterylevel"], False),
+    "metering_mode":         (["meteringmode", "eos-meteringmode"], True),
+}
+
+# Profile đặc biệt cho các dòng Canon EOS (detect qua model name từ gphoto2)
+# Dùng để tự động cấu hình khi detect thành công
+CANON_EOS_PROFILES = {
+    # model_keyword: (extra_warmup_sec, disable_auto_poweroff, mirror_lock_off, notes)
+    "eos 6d":   {"extra_warmup": 5.0, "disable_autopoweroff": True, "mirror_lock_off": True, "notes": "Boot USB chậm, tự ngủ sau 30s"},
+    "eos 5d":   {"extra_warmup": 5.0, "disable_autopoweroff": True, "mirror_lock_off": True, "notes": "Mark III/IV, boot USB chậm"},
+    "eos 7d":   {"extra_warmup": 3.0, "disable_autopoweroff": True, "mirror_lock_off": True, "notes": "Boot nhanh hơn 6D/5D"},
+    "eos 5ds":  {"extra_warmup": 5.0, "disable_autopoweroff": True, "mirror_lock_off": True, "notes": "50MP, file lớn"},
+    "eos r":    {"extra_warmup": 3.0, "disable_autopoweroff": True, "mirror_lock_off": False, "notes": "Mirrorless, không có mirror lock"},
+    "eos rp":   {"extra_warmup": 3.0, "disable_autopoweroff": True, "mirror_lock_off": False, "notes": "Mirrorless entry"},
+    "eos r5":   {"extra_warmup": 3.0, "disable_autopoweroff": True, "mirror_lock_off": False, "notes": "Mirrorless cao cấp"},
+    "eos r6":   {"extra_warmup": 3.0, "disable_autopoweroff": True, "mirror_lock_off": False, "notes": "Mirrorless"},
 }
 
 SIM_INFO_TELEMETRY = {

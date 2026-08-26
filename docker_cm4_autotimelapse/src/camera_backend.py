@@ -15,7 +15,7 @@ import threading
 from datetime import datetime
 from PIL import Image, ImageDraw
 
-from config import SETTING_SPECS, MAX_CAMERA_RETRIES
+from config import SETTING_SPECS, MAX_CAMERA_RETRIES, CANON_EOS_PROFILES, CANON_EOS_WARMUP_EXTRA_SEC
 from power_manager import CameraPowerManager
 from usb_utils import reset_all_camera_usb_devices
 
@@ -38,6 +38,11 @@ class HybridCameraBackend:
         self.use_real_hardware = False
         self.power_manager = power_manager
 
+        # Canon EOS đặc biệt: lưu profile và camera info sau khi detect thành công
+        self._detected_camera_info = None   # Cache kết quả get_camera_info()
+        self._canon_profile = None          # Canon EOS profile từ CANON_EOS_PROFILES
+        self._canon_model_key = None        # Key match trong CANON_EOS_PROFILES (vd: "eos 6d")
+
         self._sim_applied = {
             "iso": "100", "aperture": "f/4", "shutter_speed": "1/200",
             "exposure_compensation": "0.0", "white_balance": "Auto",
@@ -46,6 +51,10 @@ class HybridCameraBackend:
             "capture_target": "Memory Card", "high_iso_nr": "Off",
             "long_exp_nr": "Off", "liveview_af": "Normal Area",
             "exposure_mode": "Manual", "focus_switch": "AF",
+            # Canon EOS specific defaults
+            "drivemode": "Single", "mirror_lockup": "Off",
+            "auto_power_off": "Off", "battery_level": "100%",
+            "metering_mode": "Evaluative",
         }
 
     def _try_init_real_camera(self):
@@ -91,6 +100,10 @@ class HybridCameraBackend:
                     first_line = str(summary).split('\n')[0] if summary else "gphoto2 USB Device"
                     log.info("📷 [USB SUCCESS] Kết nối MÁY ẢNH THẬT thành công sau %d lần thử! (%s)",
                              attempt, first_line)
+
+                    # ── Canon EOS auto-detect & auto-config ──
+                    self._detect_and_apply_canon_defaults()
+
                     return True
 
                 except Exception as e:
@@ -137,10 +150,17 @@ class HybridCameraBackend:
         Poll liên tục kiểm tra máy ảnh đã thực sự sẵn sàng chụp chưa:
         - Đọc được config (máy ảnh nhận tín hiệu)
         - Đọc được storage/battery (thẻ nhớ đã mount xong)
+        - Canon EOS: tự động tăng timeout thêm CANON_EOS_WARMUP_EXTRA_SEC
         Trả về True nếu sẵn sàng, False nếu timeout.
         """
         if not GPHOTO2_AVAILABLE or self._camera is None:
             return False
+
+        # Canon EOS cần thêm thời gian chờ
+        if self._canon_profile:
+            extra = self._canon_profile.get("extra_warmup", CANON_EOS_WARMUP_EXTRA_SEC)
+            timeout = max(timeout, timeout + extra)
+            log.debug("⏳ [CANON] Tăng camera ready timeout lên %.1fs (extra=%.1fs)", timeout, extra)
 
         deadline = time.monotonic() + timeout
         attempt = 0
@@ -151,11 +171,17 @@ class HybridCameraBackend:
                 config = self._camera.get_config()
 
                 # Kiểm tra 2: Đọc được battery level - chắc chắn máy ảnh đã boot xong
+                # Canon EOS dùng "eosbatterylevel", Nikon/Sony dùng "batterylevel"
+                bat_candidates = ["eosbatterylevel", "batterylevel"] if self._canon_profile else ["batterylevel"]
                 try:
-                    battery = config.get_child_by_name("batterylevel")
-                    bat_val = battery.get_value()
-                    log.info("✅ [CAMERA READY] Máy ảnh sẵn sàng sau %.1fs (poll lần %d) | Battery: %s",
-                             timeout - (deadline - time.monotonic()), attempt, bat_val)
+                    bat_widget, bat_name = self._find_widget(config, bat_candidates)
+                    if bat_widget:
+                        bat_val = bat_widget.get_value()
+                        log.info("✅ [CAMERA READY] Máy ảnh sẵn sàng sau %.1fs (poll lần %d) | Battery[%s]: %s",
+                                 timeout - (deadline - time.monotonic()), attempt, bat_name, bat_val)
+                    else:
+                        log.info("✅ [CAMERA READY] Máy ảnh sẵn sàng sau %.1fs (poll lần %d)",
+                                 timeout - (deadline - time.monotonic()), attempt)
                 except Exception:
                     log.info("✅ [CAMERA READY] Máy ảnh sẵn sàng sau %.1fs (poll lần %d)",
                              timeout - (deadline - time.monotonic()), attempt)
@@ -170,6 +196,141 @@ class HybridCameraBackend:
         log.warning("⚠️ [CAMERA READY] Máy ảnh KHÔNG sẵn sàng sau %.1fs timeout!", timeout)
         return False
 
+    def _detect_and_apply_canon_defaults(self):
+        """
+        Phát hiện model Canon EOS và tự động cấu hình tối ưu cho timelapse.
+        Gọi sau khi _try_init_real_camera() thành công.
+        """
+        if self._camera is None:
+            return
+
+        # 1. Lấy camera info và cache lại
+        self._detected_camera_info = self.get_camera_info()
+        brand = self._detected_camera_info.get("brand", "")
+        model = self._detected_camera_info.get("model", "")
+        model_lower = model.lower()
+
+        if brand != "Canon":
+            log.info("📷 [DETECT] Máy ảnh: %s %s (Không phải Canon — bỏ qua Canon-specific config)", brand, model)
+            return
+
+        # 2. Tìm Canon EOS profile phù hợp
+        matched_key = None
+        matched_profile = None
+        for key, profile in CANON_EOS_PROFILES.items():
+            if key in model_lower:
+                matched_key = key
+                matched_profile = profile
+                break
+
+        self._canon_model_key = matched_key
+        self._canon_profile = matched_profile
+
+        if matched_profile:
+            log.info("📷 [CANON EOS] Phát hiện %s → Profile: %s | Notes: %s",
+                     model, matched_key.upper(), matched_profile.get("notes", ""))
+        else:
+            log.info("📷 [CANON EOS] Phát hiện %s — Không có profile đặc biệt, dùng Canon mặc định.", model)
+            matched_profile = {"disable_autopoweroff": True, "mirror_lock_off": True}
+
+        # 3. Tự động cấu hình Canon EOS
+        self._apply_canon_eos_defaults(matched_profile)
+
+    def _apply_canon_eos_defaults(self, profile: dict):
+        """
+        Cấu hình mặc định tối ưu cho Canon EOS khi detect thành công.
+        - Tắt Auto Power Off (critical! Canon tự ngủ sau 30s-1min)
+        - Tắt Mirror Lock-up (tránh mirror stuck)
+        - Set Drive Mode = Single Shot
+        """
+        if self._camera is None:
+            return
+
+        try:
+            config = self._camera.get_config()
+            changes_made = []
+
+            # ── 3a. Tắt Auto Power Off (CRITICAL cho timelapse) ──
+            if profile.get("disable_autopoweroff", True):
+                apo_widget, apo_name = self._find_widget(config, ["autopoweroff", "eosautopoweroff"])
+                if apo_widget and not apo_widget.get_readonly():
+                    current_val = str(apo_widget.get_value())
+                    # Canon Auto Power Off: "0" hoặc "None" = tắt
+                    if current_val not in ("0", "None", "Off"):
+                        try:
+                            # Thử set "0" trước (Canon DSLR), nếu lỗi thử "None"
+                            wtype = apo_widget.get_type()
+                            if wtype in (5, 6):  # RADIO / MENU
+                                choices = [str(apo_widget.get_choice(i)) for i in range(apo_widget.count_choices())]
+                                for off_val in ["0", "None", "Off"]:
+                                    if off_val in choices:
+                                        apo_widget.set_value(off_val)
+                                        changes_made.append(f"AutoPowerOff: {current_val} → {off_val}")
+                                        break
+                            else:
+                                apo_widget.set_value("0")
+                                changes_made.append(f"AutoPowerOff: {current_val} → 0")
+                        except Exception as e:
+                            log.debug("Không set được AutoPowerOff: %s", e)
+                    else:
+                        log.debug("AutoPowerOff đã TẮT (%s)", current_val)
+
+            # ── 3b. Tắt Mirror Lock-up (DSLR only) ──
+            if profile.get("mirror_lock_off", True):
+                ml_widget, ml_name = self._find_widget(config, ["mirrorlock", "eosmirrorlock", "mirrorlockup"])
+                if ml_widget and not ml_widget.get_readonly():
+                    current_val = str(ml_widget.get_value())
+                    if current_val not in ("0", "Off", "Disable"):
+                        try:
+                            wtype = ml_widget.get_type()
+                            if wtype in (5, 6):
+                                choices = [str(ml_widget.get_choice(i)) for i in range(ml_widget.count_choices())]
+                                for off_val in ["0", "Off", "Disable"]:
+                                    if off_val in choices:
+                                        ml_widget.set_value(off_val)
+                                        changes_made.append(f"MirrorLock: {current_val} → {off_val}")
+                                        break
+                            else:
+                                ml_widget.set_value("0")
+                                changes_made.append(f"MirrorLock: {current_val} → 0")
+                        except Exception as e:
+                            log.debug("Không set được MirrorLock: %s", e)
+
+            # ── 3c. Set Drive Mode = Single ──
+            dm_widget, dm_name = self._find_widget(config, ["drivemode"])
+            if dm_widget and not dm_widget.get_readonly():
+                current_val = str(dm_widget.get_value())
+                if "continuous" in current_val.lower() or "timer" in current_val.lower():
+                    try:
+                        wtype = dm_widget.get_type()
+                        if wtype in (5, 6):
+                            choices = [str(dm_widget.get_choice(i)) for i in range(dm_widget.count_choices())]
+                            for single_val in ["Single", "Single shooting", "Single shot"]:
+                                if single_val in choices:
+                                    dm_widget.set_value(single_val)
+                                    changes_made.append(f"DriveMode: {current_val} → {single_val}")
+                                    break
+                    except Exception as e:
+                        log.debug("Không set được DriveMode: %s", e)
+
+            # ── Apply tất cả thay đổi ──
+            if changes_made:
+                self._camera.set_config(config)
+                log.info("⚙️ [CANON AUTO-CONFIG] Đã cấu hình Canon EOS: %s", " | ".join(changes_made))
+            else:
+                log.info("⚙️ [CANON AUTO-CONFIG] Canon EOS đã đúng cấu hình, không cần thay đổi.")
+
+            # ── Log battery level Canon ──
+            try:
+                bat_widget, bat_name = self._find_widget(config, ["eosbatterylevel", "batterylevel"])
+                if bat_widget:
+                    log.info("🔋 [CANON BATTERY] %s = %s", bat_name, bat_widget.get_value())
+            except Exception:
+                pass
+
+        except Exception as e:
+            log.warning("⚠️ [CANON AUTO-CONFIG] Lỗi cấu hình Canon EOS: %s (máy ảnh vẫn hoạt động)", e)
+
 
     def disconnect_real_camera(self):
         with self._lock:
@@ -180,6 +341,9 @@ class HybridCameraBackend:
                     pass
                 self._camera = None
                 self.use_real_hardware = False
+                self._detected_camera_info = None
+                self._canon_profile = None
+                self._canon_model_key = None
                 log.info("🔌 Đã đóng kết nối máy ảnh USB gphoto2.")
 
                 # Force reset USB bus để Linux kernel quét lại thiết bị
@@ -192,15 +356,36 @@ class HybridCameraBackend:
                     log.debug("USB reset không cần thiết: %s", e)
 
     def _find_widget(self, config, candidate_names):
-        """Tìm widget đầu tiên tồn tại trong danh sách tên ứng viên (hỗ trợ cả Canon, Nikon, Sony)."""
+        """Tìm widget đầu tiên tồn tại trong danh sách tên ứng viên (đệ quy toàn bộ cây gphoto2)."""
         if isinstance(candidate_names, str):
             candidate_names = [candidate_names]
+        
+        # 1. Thử tìm nhanh get_child_by_name
         for name in candidate_names:
             try:
                 return config.get_child_by_name(name), name
             except Exception:
-                continue
-        return None, None
+                pass
+        
+        # 2. Đệ quy tìm kiếm trong toàn bộ các nhánh con
+        target_set = set(candidate_names)
+        def _search_rec(w):
+            try:
+                w_name = w.get_name()
+                if w_name in target_set:
+                    return w, w_name
+            except Exception:
+                pass
+            try:
+                for i in range(w.count_children()):
+                    res, matched = _search_rec(w.get_child(i))
+                    if res is not None:
+                        return res, matched
+            except Exception:
+                pass
+            return None, None
+
+        return _search_rec(config)
 
     def get_camera_info(self):
         """Lấy thông tin nhận diện model, brand, lens và serial của máy ảnh (Hỗ trợ Canon, Nikon, Sony)."""
@@ -263,9 +448,13 @@ class HybridCameraBackend:
                         if widget is not None:
                             try:
                                 val = str(widget.get_value())
-                                applied[field] = val
                                 wtype = widget.get_type()
                                 choices = [str(widget.get_choice(i)) for i in range(widget.count_choices())] if wtype in (5, 6) else []
+                                if matched_name == "liveviewsize":
+                                    rev_map = {"val 0": "Large", "val 1": "Medium", "val 2": "Small", "0": "Large", "1": "Medium", "2": "Small"}
+                                    val = rev_map.get(val, val)
+                                    choices = ["Large", "Medium", "Small"]
+                                applied[field] = val
                                 capabilities[field] = {
                                     "writable": settable and not bool(widget.get_readonly()),
                                     "current": val,
@@ -274,6 +463,13 @@ class HybridCameraBackend:
                                 }
                             except Exception:
                                 pass
+                    log.info("=" * 60)
+                    log.info("📋 [GET_SETTINGS] ĐÃ ĐỌC TOÀN BỘ THÔNG SỐ TỪ MÁY ẢNH THẬT:")
+                    for f_key, f_val in applied.items():
+                        c_list = capabilities.get(f_key, {}).get("choices", [])
+                        c_info = f"({len(c_list)} choices)" if c_list else ""
+                        log.info("  • %-16s = %-16s %s", f_key, f_val, c_info)
+                    log.info("=" * 60)
                     capabilities["_camera_info"] = self.get_camera_info()
                     return applied, capabilities
                 except Exception as e:
@@ -292,6 +488,9 @@ class HybridCameraBackend:
         capabilities["aperture"]["choices"] = ["f/2.8", "f/4", "f/5.6", "f/8", "f/11", "f/16"]
         capabilities["shutter_speed"]["choices"] = ["1/4000", "1/2000", "1/1000", "1/500", "1/200", "1/100"]
         capabilities["white_balance"]["choices"] = ["Auto", "Daylight", "Cloudy", "Shade", "Tungsten"]
+        capabilities["capture_target"]["choices"] = ["Internal RAM", "Memory card"]
+        capabilities["drivemode"]["choices"] = ["Single", "Continuous", "Single silent", "Timer 2 sec", "Timer 10 sec"]
+        capabilities["auto_power_off"]["choices"] = ["0", "1 min", "2 min", "4 min", "8 min", "15 min", "30 min", "Off"]
         capabilities["_camera_info"] = self.get_camera_info()
         return dict(self._sim_applied), capabilities
 
@@ -302,32 +501,98 @@ class HybridCameraBackend:
 
         if self.use_real_hardware:
             with self._lock:
-                try:
-                    config = self._camera.get_config()
-                    failed_widgets = []
-                    success_count = 0
-                    for field, val in requested.items():
-                        if field in SETTING_SPECS and SETTING_SPECS[field][1]:
-                            candidates = SETTING_SPECS[field][0]
-                            widget, matched_name = self._find_widget(config, candidates)
-                            if widget is not None:
-                                try:
-                                    if not widget.get_readonly():
-                                        widget.set_value(str(val))
-                                        success_count += 1
-                                    else:
-                                        log.debug("Widget %s (%s) là read-only, bỏ qua", field, matched_name)
-                                except Exception as e:
-                                    failed_widgets.append(f"{field}({matched_name}): {e}")
-                            else:
-                                log.debug("Không tìm thấy widget tương thích cho %s trong %s", field, candidates)
-                    self._camera.set_config(config)
-                    if failed_widgets:
-                        log.warning("⚠️ set_settings — một số widget lỗi: %s", "; ".join(failed_widgets))
-                    else:
-                        log.info("✅ set_settings — Đã ghi %d thông số lên máy ảnh thật", success_count)
-                except Exception as e:
-                    log.warning("Không thể ghi cấu hình lên máy ảnh thật: %s", e)
+                # 1. Xả sạch event buffer của camera trước khi đọc/ghi config
+                if self._camera is not None:
+                    try:
+                        for _ in range(5):
+                            ev_type, _ = self._camera.wait_for_event(10)
+                            if ev_type == gp.GP_EVENT_TIMEOUT:
+                                break
+                    except Exception:
+                        pass
+
+                # 2. Thử ghi cấu hình với retry loop
+                for retry in range(1, 4):
+                    try:
+                        config = self._camera.get_config()
+                        failed_widgets = []
+                        success_count = 0
+
+                        for field, val in requested.items():
+                            if field in SETTING_SPECS and SETTING_SPECS[field][1]:
+                                candidates = SETTING_SPECS[field][0]
+                                widget, matched_name = self._find_widget(config, candidates)
+                                if widget is not None:
+                                    try:
+                                        if not widget.get_readonly():
+                                            target_val = str(val)
+                                            if matched_name == "liveviewsize":
+                                                size_map = {
+                                                    "large": "val 0", "0": "val 0", "val 0": "val 0",
+                                                    "medium": "val 1", "1": "val 1", "val 1": "val 1",
+                                                    "small": "val 2", "2": "val 2", "val 2": "val 2",
+                                                }
+                                                target_val = size_map.get(target_val.lower(), target_val)
+                                            else:
+                                                # Match choice nếu là RADIO / MENU
+                                                wtype = widget.get_type()
+                                                if wtype in (gp.GP_WIDGET_RADIO, gp.GP_WIDGET_MENU):
+                                                    num_c = widget.count_choices()
+                                                    choices = [str(widget.get_choice(i)) for i in range(num_c)]
+                                                    if target_val not in choices:
+                                                        # Thử case-insensitive match
+                                                        for c in choices:
+                                                            if c.lower() == target_val.lower():
+                                                                target_val = c
+                                                                break
+                                            widget.set_value(target_val)
+                                            success_count += 1
+                                            # Nếu là lệnh trigger lấy nét Canon (Press Half) -> kích hoạt lấy nét rồi tự động nhả cò
+                                            if matched_name == "eosremoterelease" and target_val in ("Press Half", "Press Half AF", "Press Full AF"):
+                                                log.info("🎯 [CANON AF] Kích hoạt lấy nét tự động (Press Half)...")
+                                        else:
+                                            log.debug("Widget %s (%s) là read-only, bỏ qua", field, matched_name)
+                                    except Exception as e:
+                                        failed_widgets.append(f"{field}({matched_name}): {e}")
+                                else:
+                                    log.debug("Không tìm thấy widget tương thích cho %s trong %s", field, candidates)
+
+                        self._camera.set_config(config)
+                        # Nếu vừa kích hoạt Press Half, chờ 0.5s lấy nét xong rồi nhả cò về Release Half/None
+                        if "autofocus" in requested and requested["autofocus"] in ("Press Half", "Press Half AF", "Auto"):
+                            time.sleep(0.5)
+                            try:
+                                cfg_rel = self._camera.get_config()
+                                w_rel, _ = self._find_widget(cfg_rel, ["eosremoterelease"])
+                                if w_rel:
+                                    w_rel.set_value("Release Half")
+                                    self._camera.set_config(cfg_rel)
+                                    log.info("🎯 [CANON AF] Đã khóa nét thành công & nhả cò (Release Half).")
+                            except Exception:
+                                pass
+                        if failed_widgets:
+                            log.warning("⚠️ set_settings (lần %d) — một số widget lỗi: %s", retry, "; ".join(failed_widgets))
+                        else:
+                            log.info("✅ set_settings — Đã ghi %d thông số lên máy ảnh thật (lần %d)", success_count, retry)
+                        break
+                    except Exception as e:
+                        log.warning("⚠️ [SET_SETTINGS] Thử lần %d/3 thất bại (%s), chờ 0.5s thử lại...", retry, e)
+                        time.sleep(0.5)
+                        if retry == 3:
+                            # Fallback: Thử ghi từng widget đơn lẻ để widget hợp lệ vẫn được áp dụng
+                            log.info("🔄 [SET_SETTINGS FALLBACK] Đang thử ghi từng thông số riêng lẻ...")
+                            for field, val in requested.items():
+                                if field in SETTING_SPECS and SETTING_SPECS[field][1]:
+                                    candidates = SETTING_SPECS[field][0]
+                                    try:
+                                        single_cfg = self._camera.get_config()
+                                        single_w, w_name = self._find_widget(single_cfg, candidates)
+                                        if single_w and not single_w.get_readonly():
+                                            single_w.set_value(str(val))
+                                            self._camera.set_config(single_cfg)
+                                            log.info("  ✓ Đã ghi đơn lẻ: %s (%s) = %s", field, w_name, val)
+                                    except Exception as ex_single:
+                                        log.debug("  ✗ Không ghi được %s: %s", field, ex_single)
 
         settable = {f for f, (_, ok) in SETTING_SPECS.items() if ok}
         for field, val in requested.items():

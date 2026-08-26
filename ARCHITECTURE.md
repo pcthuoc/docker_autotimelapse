@@ -93,7 +93,7 @@ SeaweedFS 3GB ÷ 80KB/thumb ≈ 37,500 thumbnails. Cleanup thumbnail >30 ngày s
 
 - **Ground truth**: toàn bộ ảnh gốc, không TTL, không xóa
 - **Heavy compute**: render 4K, multi-camera, ZIP toàn dự án
-- **Luồng**: R2 cold → sync về local; local render → upload thẳng R2 output
+- **Luồng**: đọc original trực tiếp từ R2 theo từng chunk; render local tạm thời; upload kết quả vào R2 output
 
 ---
 
@@ -110,7 +110,7 @@ SeaweedFS 3GB ÷ 80KB/thumb ≈ 37,500 thumbnails. Cleanup thumbnail >30 ngày s
 
 ## 8. Redis Cache Plan — 20 Camera × 5 phút/ảnh
 
-**Tải thực tế:** 20 × 12 ảnh/giờ = 240 ảnh/giờ, ~172,800 ảnh trong hot store sau 30 ngày.
+**Tải thực tế:** 20 × 12 ảnh/giờ = 240 ảnh/giờ. Original đi thẳng R2; VPS chỉ giữ thumbnail/cache và file render tạm.
 
 | Tầng | Key pattern | TTL | Size ước tính |
 |---|---|---|---|
