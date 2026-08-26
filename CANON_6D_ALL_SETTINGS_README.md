@@ -233,14 +233,14 @@ print('ISO hiện tại trên máy thật:', config2.get_child_by_name('iso').ge
 |---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | **Kênh 1 (Dự phòng)** | **Kênh 1** | **AIN0 (Chân 1)** | — | — | — | — | — |
 | **Đo 6V / 5V Sạc** | **Kênh 2** | **AIN1 (Chân 2)** | **$20\text{ k}\Omega$** | **$10\text{ k}\Omega$** | `203` / `103` | $\frac{20 + 10}{10} = \frac{30}{10}$ | **`3.0000`** |
-| **Đo Năng Lượng Solar** | **Kênh 3** | **AIN2 (Chân 3)** | **$100\text{ k}\Omega$** | **$13\text{ k}\Omega$** | `01D` / `12C` | $\frac{100 + 13}{13} = \frac{113}{13}$ | **`8.6923`** |
-| **Đo Điện Áp Pin (Bat)** | **Kênh 4** | **AIN3 (Chân 4)** | **$47\text{ k}\Omega$** | **$4.7\text{ k}\Omega$** | `473` / `472` | $\frac{47 + 4.7}{4.7} = \frac{51.7}{4.7}$ | **`11.0000`** |
+| **Đo Năng Lượng Solar** | **Kênh 3** | **AIN2 (Chân 3)** | **$47\text{ k}\Omega$** | **$4.7\text{ k}\Omega$** | `473` / `472` | $\frac{47 + 4.7}{4.7} = \frac{51.7}{4.7}$ | **`11.0000`** |
+| **Đo Điện Áp Pin (Bat)** | **Kênh 4** | **AIN3 (Chân 4)** | **$100\text{ k}\Omega$** | **$13\text{ k}\Omega$** | `01D` / `12C` | $\frac{100 + 13}{13} = \frac{113}{13}$ | **`8.6923`** |
 
 #### 📐 Công Thức Tính Điện Áp Thực Tế:
 $$V_{in} = V_{\text{ADC\_pin}} \times \text{Scale}$$
-- **Pin ($V_{bat}$ - Kênh 4 / AIN3):** $V_{\text{pin}} \times 11.0000 \quad \rightarrow 1.215\text{V} \times 11.0 = \mathbf{13.37\text{V}}$
-- **Solar ($V_{solar}$ - Kênh 3 / AIN2):** $V_{\text{pin}} \times 8.6923 \quad \rightarrow 2.400\text{V} \times 8.6923 = \mathbf{20.86\text{V}}$
-- **5V Sạc ($V_{in\_5V}$ - Kênh 2 / AIN1):** $V_{\text{pin}} \times 3.0000 \quad \rightarrow 1.667\text{V} \times 3.0 = \mathbf{5.00\text{V}}$
+- **Pin ($V_{bat}$ - Kênh 4 / AIN3):** $V_{\text{pin}} \times 8.6923 \quad \rightarrow 1.540\text{V} \times 8.6923 = \mathbf{13.39\text{V}}$
+- **Solar ($V_{solar}$ - Kênh 3 / AIN2):** $V_{\text{pin}} \times 11.0000 \quad \rightarrow 1.922\text{V} \times 11.0 = \mathbf{21.14\text{V}}$
+- **5V Sạc ($V_{in\_5V}$ - Kênh 2 / AIN1):** $V_{\text{pin}} \times 3.0000 \quad \rightarrow 1.920\text{V} \times 3.0 = \mathbf{5.76\text{V}}$
 
 ---
 
