@@ -525,7 +525,8 @@ class CameraAgent:
                 except Exception as e:
                     log.warning("Không publish cycle_capture_done: %s", e)
 
-            if not self.live_session_id and not self.always_keep_power:
+            # Chỉ tắt nguồn nếu đang chạy chu kỳ tự động (schedule), không tắt khi đang tương tác / chụp thủ công / force_on
+            if not self.live_session_id and not self.always_keep_power and self.operating_mode != "interactive" and not self.force_power_on and triggered_by == "schedule":
                 if self.capture_interval_sec == 0 or self.capture_interval_sec > 15:
                     # Ngắt kết nối USB gphoto2 trước khi tắt nguồn rơ-le
                     # để tránh gphoto2 giữ lock device, gây lỗi [-52][-7] ở lần chụp tiếp theo
