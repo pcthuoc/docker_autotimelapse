@@ -254,7 +254,7 @@ class HybridCameraBackend:
             # ── 3a. Tắt Auto Power Off (CRITICAL cho timelapse) ──
             if profile.get("disable_autopoweroff", True):
                 apo_widget, apo_name = self._find_widget(config, ["autopoweroff", "eosautopoweroff"])
-                if apo_widget and not apo_widget.get_readonly():
+                if apo_widget is not None and not apo_widget.get_readonly():
                     current_val = str(apo_widget.get_value())
                     # Canon Auto Power Off: "0" hoặc "None" = tắt
                     if current_val not in ("0", "None", "Off"):
@@ -279,7 +279,7 @@ class HybridCameraBackend:
             # ── 3b. Tắt Mirror Lock-up (DSLR only) ──
             if profile.get("mirror_lock_off", True):
                 ml_widget, ml_name = self._find_widget(config, ["mirrorlock", "eosmirrorlock", "mirrorlockup"])
-                if ml_widget and not ml_widget.get_readonly():
+                if ml_widget is not None and not ml_widget.get_readonly():
                     current_val = str(ml_widget.get_value())
                     if current_val not in ("0", "Off", "Disable"):
                         try:
@@ -299,7 +299,7 @@ class HybridCameraBackend:
 
             # ── 3c. Set Drive Mode = Single ──
             dm_widget, dm_name = self._find_widget(config, ["drivemode"])
-            if dm_widget and not dm_widget.get_readonly():
+            if dm_widget is not None and not dm_widget.get_readonly():
                 current_val = str(dm_widget.get_value())
                 if "continuous" in current_val.lower() or "timer" in current_val.lower():
                     try:
@@ -316,7 +316,7 @@ class HybridCameraBackend:
 
             # ── 3d. Set Capture Target = Internal RAM (tránh lỗi khi không có thẻ nhớ) ──
             ct_widget, _ = self._find_widget(config, ["capturetarget"])
-            if ct_widget and not ct_widget.get_readonly():
+            if ct_widget is not None and not ct_widget.get_readonly():
                 current_ct = str(ct_widget.get_value())
                 if current_ct != "Internal RAM":
                     try:
@@ -327,7 +327,7 @@ class HybridCameraBackend:
 
             # ── 3e. Set Quick Review Time = 2 seconds hoặc None ──
             rt_widget, _ = self._find_widget(config, ["reviewtime"])
-            if rt_widget and not rt_widget.get_readonly():
+            if rt_widget is not None and not rt_widget.get_readonly():
                 try:
                     wtype = rt_widget.get_type()
                     if wtype in (5, 6):
@@ -349,7 +349,7 @@ class HybridCameraBackend:
             # ── Log battery level Canon ──
             try:
                 bat_widget, bat_name = self._find_widget(config, ["eosbatterylevel", "batterylevel"])
-                if bat_widget:
+                if bat_widget is not None:
                     log.info("🔋 [CANON BATTERY] %s = %s", bat_name, bat_widget.get_value())
             except Exception:
                 pass
@@ -382,46 +382,26 @@ class HybridCameraBackend:
                     log.debug("USB reset không cần thiết: %s", e)
 
     def _find_widget(self, config, candidate_names):
-        """Tìm widget đầu tiên tồn tại trong danh sách tên ứng viên (tìm root -> sections -> scan cây)."""
+        """Tìm widget đầu tiên tồn tại trong danh sách tên ứng viên (scan 3 tầng cây gphoto2)."""
+        if config is None:
+            return None, None
         if isinstance(candidate_names, str):
             candidate_names = [candidate_names]
+        targets = set(candidate_names)
         
-        # 1. Thử tìm trực tiếp ở root
-        for name in candidate_names:
-            try:
-                return config.get_child_by_name(name), name
-            except Exception:
-                pass
-        
-        # 2. Thử tìm trong các section chuẩn của gphoto2
-        for section_name in ("actions", "settings", "imgsettings", "capturesettings", "status", "other", "main"):
-            try:
-                sec = config.get_child_by_name(section_name)
-                for name in candidate_names:
-                    try:
-                        return sec.get_child_by_name(name), name
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-        
-        # 3. Quét 2 tầng con nếu vẫn chưa thấy
-        target_set = set(candidate_names)
         try:
             for i in range(config.count_children()):
-                try:
-                    child = config.get_child(i)
-                    if child.get_name() in target_set:
-                        return child, child.get_name()
-                    for j in range(child.count_children()):
-                        try:
-                            sub = child.get_child(j)
-                            if sub.get_name() in target_set:
-                                return sub, sub.get_name()
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
+                sec = config.get_child(i)
+                if sec.get_name() in targets:
+                    return sec, sec.get_name()
+                for j in range(sec.count_children()):
+                    w = sec.get_child(j)
+                    if w.get_name() in targets:
+                        return w, w.get_name()
+                    for k in range(w.count_children()):
+                        sub = w.get_child(k)
+                        if sub.get_name() in targets:
+                            return sub, sub.get_name()
         except Exception:
             pass
 
@@ -732,84 +712,51 @@ class HybridCameraBackend:
                     # ── 3. CANON EOS SHUTTER TRIGGER (eosremoterelease) ──
                     if is_canon:
                         log.info("📸 [CANON SHUTTER] Kích hoạt chụp ảnh qua Canon EOS Remote Release...")
-
-                        # Bước 3a: Đảm bảo capturetarget = Internal RAM trước khi bấm màn trập
                         try:
-                            cfg_ct = self._camera.get_config()
-                            w_ct, _ = self._find_widget(cfg_ct, ["capturetarget"])
-                            if w_ct and str(w_ct.get_value()) != "Internal RAM":
-                                w_ct.set_value("Internal RAM")
-                                self._camera.set_config(cfg_ct)
-                                time.sleep(0.2)
-                        except Exception as e_ct:
-                            log.debug("Lỗi set capturetarget: %s", e_ct)
-
-                        # Bước 3b: Bấm màn trập cưỡng bức (Press Full MF) - Chụp chuẩn xác không trễ, không kẹt AF
-                        try:
-                            # Xóa event tồn đọng
-                            while True:
-                                ev_type, _ = self._camera.wait_for_event(50)
-                                if ev_type == gp.GP_EVENT_TIMEOUT:
-                                    break
-
-                            cfg = self._camera.get_config()
-                            w_rel, _ = self._find_widget(cfg, ["eosremoterelease"])
-                            if w_rel:
+                            # 3a. Press Half MF
+                            config = self._camera.get_config(self._context) if self._context else self._camera.get_config()
+                            w_rel, _ = self._find_widget(config, ["eosremoterelease"])
+                            if w_rel is not None:
                                 w_rel.set_value("Press Half MF")
-                                self._camera.set_config(cfg)
-                                time.sleep(0.2)
+                                if self._context:
+                                    self._camera.set_config(config, self._context)
+                                else:
+                                    self._camera.set_config(config)
+                                time.sleep(0.3)
 
-                                cfg = self._camera.get_config()
-                                w_rel, _ = self._find_widget(cfg, ["eosremoterelease"])
-                                w_rel.set_value("Press Full MF")
-                                self._camera.set_config(cfg)
-                                time.sleep(0.4)
+                                # 3b. Press Full MF (chụp ngay tức thì không kẹt AF)
+                                config = self._camera.get_config(self._context) if self._context else self._camera.get_config()
+                                w_rel, _ = self._find_widget(config, ["eosremoterelease"])
+                                if w_rel is not None:
+                                    w_rel.set_value("Press Full MF")
+                                    if self._context:
+                                        self._camera.set_config(config, self._context)
+                                    else:
+                                        self._camera.set_config(config)
+                                time.sleep(0.5)
 
-                                cfg = self._camera.get_config()
-                                w_rel, _ = self._find_widget(cfg, ["eosremoterelease"])
-                                w_rel.set_value("Release")
-                                self._camera.set_config(cfg)
+                                # 3c. Release shutter button
+                                config = self._camera.get_config(self._context) if self._context else self._camera.get_config()
+                                w_rel, _ = self._find_widget(config, ["eosremoterelease"])
+                                if w_rel is not None:
+                                    w_rel.set_value("Release")
+                                    if self._context:
+                                        self._camera.set_config(config, self._context)
+                                    else:
+                                        self._camera.set_config(config)
 
-                                # Polling event chờ file ảnh về
-                                deadline = time.monotonic() + 8.0
+                                # 3d. Polling event chờ file ảnh nạp về
+                                deadline = time.monotonic() + 10.0
                                 while time.monotonic() < deadline:
-                                    ev_type, ev_data = self._camera.wait_for_event(300)
+                                    ev_type, ev_data = self._camera.wait_for_event(300, self._context) if self._context else self._camera.wait_for_event(300)
                                     if ev_type == gp.GP_EVENT_FILE_ADDED:
+                                        log.info("🎉 [CANON EOS] Nhận file mới từ máy ảnh: %s/%s", ev_data.folder, ev_data.name)
                                         paths[(ev_data.folder, ev_data.name)] = ev_data
                                         break
+                            else:
+                                log.warning("⚠️ Không tìm thấy widget eosremoterelease trên Canon EOS.")
                         except Exception as e_mf:
-                            log.warning("⚠️ Lỗi Press Full MF (%s)", e_mf)
-
-                        # Bước 3c: Fallback sang Press Full AF nếu MF chưa ra file
-                        if not paths:
-                            log.info("🎯 [CANON AF FALLBACK] Thử bấm màn trập AF...")
-                            try:
-                                cfg = self._camera.get_config()
-                                w_rel, _ = self._find_widget(cfg, ["eosremoterelease"])
-                                if w_rel:
-                                    w_rel.set_value("Press Half AF")
-                                    self._camera.set_config(cfg)
-                                    time.sleep(0.3)
-
-                                    cfg = self._camera.get_config()
-                                    w_rel, _ = self._find_widget(cfg, ["eosremoterelease"])
-                                    w_rel.set_value("Press Full AF")
-                                    self._camera.set_config(cfg)
-                                    time.sleep(0.4)
-
-                                    cfg = self._camera.get_config()
-                                    w_rel, _ = self._find_widget(cfg, ["eosremoterelease"])
-                                    w_rel.set_value("Release")
-                                    self._camera.set_config(cfg)
-
-                                    deadline = time.monotonic() + 4.0
-                                    while time.monotonic() < deadline:
-                                        ev_type, ev_data = self._camera.wait_for_event(300)
-                                        if ev_type == gp.GP_EVENT_FILE_ADDED:
-                                            paths[(ev_data.folder, ev_data.name)] = ev_data
-                                            break
-                            except Exception as e_af:
-                                log.warning("⚠️ Lỗi Press Full AF (%s)", e_af)
+                            log.warning("⚠️ Lỗi Canon EOS Remote Release (%s)", e_mf)
 
                     # ── 4. NON-CANON HOẶC STANDARD GPHOTO2 FALLBACK ──
                     if not paths:
