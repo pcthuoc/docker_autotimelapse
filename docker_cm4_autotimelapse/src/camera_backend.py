@@ -35,6 +35,7 @@ class HybridCameraBackend:
     def __init__(self, power_manager: CameraPowerManager):
         self._lock = threading.Lock()
         self._camera = None
+        self._context = gp.Context() if GPHOTO2_AVAILABLE else None
         self.use_real_hardware = False
         self.power_manager = power_manager
 
