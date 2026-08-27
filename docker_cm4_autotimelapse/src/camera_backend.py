@@ -382,36 +382,50 @@ class HybridCameraBackend:
                     log.debug("USB reset không cần thiết: %s", e)
 
     def _find_widget(self, config, candidate_names):
-        """Tìm widget đầu tiên tồn tại trong danh sách tên ứng viên (đệ quy toàn bộ cây gphoto2)."""
+        """Tìm widget đầu tiên tồn tại trong danh sách tên ứng viên (tìm root -> sections -> scan cây)."""
         if isinstance(candidate_names, str):
             candidate_names = [candidate_names]
         
-        # 1. Thử tìm nhanh get_child_by_name
+        # 1. Thử tìm trực tiếp ở root
         for name in candidate_names:
             try:
                 return config.get_child_by_name(name), name
             except Exception:
                 pass
         
-        # 2. Đệ quy tìm kiếm trong toàn bộ các nhánh con
+        # 2. Thử tìm trong các section chuẩn của gphoto2
+        for section_name in ("actions", "settings", "imgsettings", "capturesettings", "status", "other", "main"):
+            try:
+                sec = config.get_child_by_name(section_name)
+                for name in candidate_names:
+                    try:
+                        return sec.get_child_by_name(name), name
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        
+        # 3. Quét 2 tầng con nếu vẫn chưa thấy
         target_set = set(candidate_names)
-        def _search_rec(w):
-            try:
-                w_name = w.get_name()
-                if w_name in target_set:
-                    return w, w_name
-            except Exception:
-                pass
-            try:
-                for i in range(w.count_children()):
-                    res, matched = _search_rec(w.get_child(i))
-                    if res is not None:
-                        return res, matched
-            except Exception:
-                pass
-            return None, None
+        try:
+            for i in range(config.count_children()):
+                try:
+                    child = config.get_child(i)
+                    if child.get_name() in target_set:
+                        return child, child.get_name()
+                    for j in range(child.count_children()):
+                        try:
+                            sub = child.get_child(j)
+                            if sub.get_name() in target_set:
+                                return sub, sub.get_name()
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
-        return _search_rec(config)
+        return None, None
 
     def get_camera_info(self):
         """Lấy thông tin nhận diện model, brand, lens và serial của máy ảnh (Hỗ trợ Canon, Nikon, Sony)."""
@@ -718,7 +732,6 @@ class HybridCameraBackend:
                     # ── 3. CANON EOS SHUTTER TRIGGER (eosremoterelease) ──
                     if is_canon:
                         log.info("📸 [CANON SHUTTER] Kích hoạt chụp ảnh qua Canon EOS Remote Release...")
-                        af_success = False
 
                         # Bước 3a: Đảm bảo capturetarget = Internal RAM trước khi bấm màn trập
                         try:
@@ -731,18 +744,24 @@ class HybridCameraBackend:
                         except Exception as e_ct:
                             log.debug("Lỗi set capturetarget: %s", e_ct)
 
-                        # Bước 3b: Thử Shutter Release với AutoFocus (Press Full AF)
+                        # Bước 3b: Bấm màn trập cưỡng bức (Press Full MF) - Chụp chuẩn xác không trễ, không kẹt AF
                         try:
+                            # Xóa event tồn đọng
+                            while True:
+                                ev_type, _ = self._camera.wait_for_event(50)
+                                if ev_type == gp.GP_EVENT_TIMEOUT:
+                                    break
+
                             cfg = self._camera.get_config()
                             w_rel, _ = self._find_widget(cfg, ["eosremoterelease"])
                             if w_rel:
-                                w_rel.set_value("Press Half AF")
+                                w_rel.set_value("Press Half MF")
                                 self._camera.set_config(cfg)
-                                time.sleep(0.3)
+                                time.sleep(0.2)
 
                                 cfg = self._camera.get_config()
                                 w_rel, _ = self._find_widget(cfg, ["eosremoterelease"])
-                                w_rel.set_value("Press Full AF")
+                                w_rel.set_value("Press Full MF")
                                 self._camera.set_config(cfg)
                                 time.sleep(0.4)
 
@@ -751,38 +770,30 @@ class HybridCameraBackend:
                                 w_rel.set_value("Release")
                                 self._camera.set_config(cfg)
 
-                                # Polling event chờ file
-                                deadline = time.monotonic() + 3.0
+                                # Polling event chờ file ảnh về
+                                deadline = time.monotonic() + 8.0
                                 while time.monotonic() < deadline:
                                     ev_type, ev_data = self._camera.wait_for_event(300)
                                     if ev_type == gp.GP_EVENT_FILE_ADDED:
                                         paths[(ev_data.folder, ev_data.name)] = ev_data
-                                        af_success = True
                                         break
-                        except Exception as e_af:
-                            log.warning("⚠️ Lỗi Press Full AF (%s)", e_af)
+                        except Exception as e_mf:
+                            log.warning("⚠️ Lỗi Press Full MF (%s)", e_mf)
 
-                        # Bước 3c: Nếu Press Full AF không ra file (phòng tối, lens không khóa nét được ở One Shot AF),
-                        # tự động fallback sang Press Full MF (Manual Focus Release - cưỡng bức chụp ngay lập tức)
-                        if not af_success or not paths:
-                            log.info("🎯 [CANON MF FALLBACK] Thử bấm màn trập Manual Focus (Press Full MF)...")
+                        # Bước 3c: Fallback sang Press Full AF nếu MF chưa ra file
+                        if not paths:
+                            log.info("🎯 [CANON AF FALLBACK] Thử bấm màn trập AF...")
                             try:
-                                # Xóa event tồn đọng
-                                while True:
-                                    ev_type, _ = self._camera.wait_for_event(50)
-                                    if ev_type == gp.GP_EVENT_TIMEOUT:
-                                        break
-
                                 cfg = self._camera.get_config()
                                 w_rel, _ = self._find_widget(cfg, ["eosremoterelease"])
                                 if w_rel:
-                                    w_rel.set_value("Press Half MF")
+                                    w_rel.set_value("Press Half AF")
                                     self._camera.set_config(cfg)
-                                    time.sleep(0.2)
+                                    time.sleep(0.3)
 
                                     cfg = self._camera.get_config()
                                     w_rel, _ = self._find_widget(cfg, ["eosremoterelease"])
-                                    w_rel.set_value("Press Full MF")
+                                    w_rel.set_value("Press Full AF")
                                     self._camera.set_config(cfg)
                                     time.sleep(0.4)
 
@@ -791,15 +802,14 @@ class HybridCameraBackend:
                                     w_rel.set_value("Release")
                                     self._camera.set_config(cfg)
 
-                                    # Polling event chờ file
-                                    deadline = time.monotonic() + 8.0
+                                    deadline = time.monotonic() + 4.0
                                     while time.monotonic() < deadline:
                                         ev_type, ev_data = self._camera.wait_for_event(300)
                                         if ev_type == gp.GP_EVENT_FILE_ADDED:
                                             paths[(ev_data.folder, ev_data.name)] = ev_data
                                             break
-                            except Exception as e_mf:
-                                log.warning("⚠️ Lỗi Press Full MF (%s)", e_mf)
+                            except Exception as e_af:
+                                log.warning("⚠️ Lỗi Press Full AF (%s)", e_af)
 
                     # ── 4. NON-CANON HOẶC STANDARD GPHOTO2 FALLBACK ──
                     if not paths:

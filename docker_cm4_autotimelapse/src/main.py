@@ -83,6 +83,7 @@ class CameraAgent:
         self.server_base = server_base.rstrip("/")
         self.always_keep_power = always_keep_power
         self.telemetry_interval = telemetry_interval
+        self._is_capturing = False           # Cờ khóa Live View khi đang chụp ảnh thật tránh xung đột USB
         self.offline_retry_interval = offline_retry_interval
         self.auto_shutdown_after_capture = auto_shutdown
         self.auto_capture_on_boot = auto_capture_boot
@@ -444,71 +445,96 @@ class CameraAgent:
         Args:
             triggered_by: "schedule" (chu kỳ EC25) hoặc "force_on" (cưỡng bức) hoặc "mqtt" (lệnh thủ công).
         """
-        self.power_manager.power_on()
+        self._is_capturing = True
+        try:
+            self.power_manager.power_on()
 
-        taken_at = datetime.now(timezone.utc).isoformat()
-        captured_files = self.backend.capture(camera_code=self.code)
-        media_ids = []
+            taken_at = datetime.now(timezone.utc).isoformat()
+            captured_files = self.backend.capture(camera_code=self.code)
+            media_ids = []
 
-        for filename, image_bytes, thumb in captured_files:
-            final_bytes, width, height = self._normalize_image_bytes(image_bytes, thumb)
+            for filename, image_bytes, thumb in captured_files:
+                final_bytes, width, height = self._normalize_image_bytes(image_bytes, thumb)
 
-            if thumb is None:
+                if thumb is None:
+                    try:
+                        with Image.open(io.BytesIO(final_bytes)) as im:
+                            t = im.copy()
+                            t.thumbnail((480, 320))
+                            buf = io.BytesIO()
+                            t.save(buf, "JPEG", quality=82)
+                            thumb = buf.getvalue()
+                    except Exception as e:
+                        log.warning("Lỗi sinh thumbnail: %s", e)
+
+                metadata = {
+                    "content_type": "image/jpeg",
+                    "taken_at": taken_at,
+                    "source_name": filename,
+                    "width": width,
+                    "height": height,
+                    "camera_code": self.code,
+                }
+
+                ok, media_id = False, None
+                for attempt in range(1, MAX_UPLOAD_RETRIES + 1):
+                    ok, media_id = self._do_upload_to_server(final_bytes, thumb, metadata)
+                    if ok:
+                        break
+                    log.warning("⚠️ Upload lần %d/%d thất bại.%s",
+                                attempt, MAX_UPLOAD_RETRIES,
+                                f" Thử lại sau {UPLOAD_RETRY_DELAY}s..." if attempt < MAX_UPLOAD_RETRIES else " → Offline Queue.")
+                    if attempt < MAX_UPLOAD_RETRIES:
+                        time.sleep(UPLOAD_RETRY_DELAY)
+
+                if ok and media_id:
+                    log.info("🎉 Upload OK! media_id=%s file=%s (%d bytes, %dx%d)",
+                             media_id, filename, len(final_bytes), width, height)
+                    media_ids.append(media_id)
+                else:
+                    self.offline_queue.save_pending_capture(final_bytes, thumb, metadata)
+
+            # ── Sau khi chụp xong: xoá missed_capture_flag và thông báo cho EC25 ──
+            if self.missed_capture_flag:
+                self._set_missed_capture_flag(False, f"chụp xong (triggered_by={triggered_by})")
+
+            # Lưu timestamp chụp gần nhất và trạng thái để EC25 đồng bộ
+            self._save_ec25_state(
+                last_capture_ts=taken_at,
+                last_capture_triggered_by=triggered_by,
+                capture_success=bool(captured_files),
+            )
+
+            # Publish MQTT thông báo EC25 biết CM4 đã hoàn thành chu kỳ chụp
+            if triggered_by == "schedule" and self.mqtt_client and self.mqtt_client.is_connected():
                 try:
-                    with Image.open(io.BytesIO(final_bytes)) as im:
-                        t = im.copy()
-                        t.thumbnail((480, 320))
-                        buf = io.BytesIO()
-                        t.save(buf, "JPEG", quality=82)
-                        thumb = buf.getvalue()
+                    self.mqtt_client.publish(
+                        self.t_status,
+                        json.dumps({
+                            "online": True,
+                            "node": "cm4",
+                            "event": "cycle_capture_done",
+                            "triggered_by": triggered_by,
+                            "taken_at": taken_at,
+                            "media_count": len(media_ids),
+                        }),
+                        qos=1,
+                        retain=False,
+                    )
+                    log.info("📡 [CYCLE-EC25] Đã publish cycle_capture_done → EC25 nhận tín hiệu.")
                 except Exception as e:
-                    log.warning("Lỗi sinh thumbnail: %s", e)
+                    log.warning("Không publish cycle_capture_done: %s", e)
 
-            metadata = {
-                "content_type": "image/jpeg",
-                "taken_at": taken_at,
-                "source_name": filename,
-                "width": width,
-                "height": height,
-                "camera_code": self.code,
-            }
+            if not self.live_session_id and not self.always_keep_power:
+                if self.capture_interval_sec == 0 or self.capture_interval_sec > 15:
+                    # Ngắt kết nối USB gphoto2 trước khi tắt nguồn rơ-le
+                    # để tránh gphoto2 giữ lock device, gây lỗi [-52][-7] ở lần chụp tiếp theo
+                    self.backend.disconnect_real_camera()
+                    self.power_manager.power_off()
 
-            ok, media_id = False, None
-            for attempt in range(1, MAX_UPLOAD_RETRIES + 1):
-                ok, media_id = self._do_upload_to_server(final_bytes, thumb, metadata)
-                if ok:
-                    break
-                log.warning("⚠️ Upload lần %d/%d thất bại.%s",
-                            attempt, MAX_UPLOAD_RETRIES,
-                            f" Thử lại sau {UPLOAD_RETRY_DELAY}s..." if attempt < MAX_UPLOAD_RETRIES else " → Offline Queue.")
-                if attempt < MAX_UPLOAD_RETRIES:
-                    time.sleep(UPLOAD_RETRY_DELAY)
-
-            if ok and media_id:
-                log.info("🎉 Upload OK! media_id=%s file=%s (%d bytes, %dx%d)",
-                         media_id, filename, len(final_bytes), width, height)
-                media_ids.append(media_id)
-            else:
-                self.offline_queue.save_pending_capture(final_bytes, thumb, metadata)
-
-        # ── Sau khi chụp xong: xoá missed_capture_flag và thông báo cho EC25 ──
-        if self.missed_capture_flag:
-            self._set_missed_capture_flag(False, f"chụp xong (triggered_by={triggered_by})")
-
-        # Lưu timestamp chụp gần nhất và trạng thái để EC25 đồng bộ
-        self._save_ec25_state(
-            last_capture_ts=taken_at,
-            last_capture_triggered_by=triggered_by,
-            capture_success=bool(captured_files),
-        )
-
-        # Publish MQTT thông báo EC25 biết CM4 đã hoàn thành chu kỳ chụp
-        if triggered_by == "schedule" and self.mqtt_client and self.mqtt_client.is_connected():
-            try:
-                self.mqtt_client.publish(
-                    self.t_status,
-                    json.dumps({
-                        "online": True,
+            return media_ids
+        finally:
+            self._is_capturing = Falsee,
                         "node": "cm4",
                         "event": "cycle_capture_done",
                         "triggered_by": triggered_by,
@@ -725,6 +751,9 @@ class CameraAgent:
                 self.live_session_id = None
                 if self.backend:
                     self.backend.end_live_view()
+                if not self.always_keep_power and (self.capture_interval_sec == 0 or self.capture_interval_sec > 15):
+                    self.backend.disconnect_real_camera()
+                    self.power_manager.power_off()
                 resp = {"type": cmd, "request_id": rid, "status": "ok",
                         "data": {"live_view": False}}
 
@@ -749,7 +778,7 @@ class CameraAgent:
     def _fn_live_view(self):
         while self.running:
             self.watchdog.touch("liveview")
-            if not self.live_session_id:
+            if not self.live_session_id or getattr(self, "_is_capturing", False):
                 time.sleep(0.5)
                 continue
             self.live_seq += 1
