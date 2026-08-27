@@ -1,11 +1,61 @@
-Access Key ID
-865bec4def3afc37bcf32e6c1c09d002
-Click to copy
-
-Secret Access Key
-c1f5e67bdcc4fe4b66cddc8662b3faef5369b9b51be00d85b168abc822cef8db
-Click to copy
-
-Use jurisdiction-specific endpoints for S3 clients:
-DefaultEuropean Union (EU)
-https://609dcc61436287f6efb7923689e5fbd2.r2.cloudflarestorage.com
+Vấn đề cần xử lý trước production
+1. Rò rỉ credential MQTT
+Hàm serialize camera trả mqtt_password cho mọi user có quyền xem camera:
+[core/api_views/_helpers.py](/root/UI_autotimelapse/repo/backend/core/api_views/_helpers.py)
+Trong khi API danh sách/detail camera cho cả client member truy cập:
+[core/api_views/cameras.py](/root/UI_autotimelapse/repo/backend/core/api_views/cameras.py)
+Member read-only vì vậy vẫn có thể lấy mật khẩu MQTT, kết nối broker và giả mạo thiết bị. Nên bỏ trường này khỏi serializer chung; chỉ endpoint credentials dành cho admin mới được trả secret.
+2. Credential và private key đang được commit
+Các file nhạy cảm đang được Git theo dõi:
+environment/local_settings.py
+config/nginx/ssl/nginx.key
+config/mosquitto/dynamic-security.json
+Ngoài ra settings còn có default password/secret thật cho Django, DB, MQTT và SeaweedFS:
+[settings.py](/root/UI_autotimelapse/repo/backend/autotimelapse/settings.py)
+[local_settings.py](/root/UI_autotimelapse/environment/local_settings.py)
+Cần rotate toàn bộ credential đã commit, xóa khỏi Git history nếu repo từng public/chia sẻ, và bắt buộc lấy secret từ environment.
+3. Bug endpoint tải media
+api_media_download() gọi _st.presigned_get_url(...), nhưng _st chỉ được import cục bộ trong hàm gallery nên endpoint download sẽ phát sinh NameError:
+[media.py](/root/UI_autotimelapse/repo/backend/core/api_views/media.py)
+Đây là lỗi runtime cụ thể cần sửa sớm.
+4. Phân quyền Site còn thiếu object-level check
+Ở PATCH/DELETE site, client admin chỉ được kiểm tra là admin, nhưng chưa kiểm tra site đó có thuộc client của họ hay không:
+[sites.py](/root/UI_autotimelapse/repo/backend/core/api_views/sites.py)
+Nếu biết UUID site khác, một client admin có thể sửa hoặc xóa site của client khác. Đây là lỗi phân quyền nghiêm trọng.
+5. Upload completion chưa liên kết chắc với presign
+upload_complete kiểm tra key thuộc prefix camera và object tồn tại, nhưng khi Redis mất key presign, client được phép tự gửi storage. Chưa có token hoặc record ràng buộc chính xác media_id ↔ key ↔ camera ↔ expiration.
+Một thiết bị đã bị chiếm credential có thể đăng ký metadata cho object bất kỳ trong prefix của nó. Nên lưu presign intent có chữ ký hoặc DB/Redis record bắt buộc, không fallback theo dữ liệu client.
+6. Test gần như chưa có
+Backend hiện chỉ có file test rỗng:
+[tests.py](/root/UI_autotimelapse/repo/backend/core/tests.py)
+Frontend không có test suite. Các phần có rủi ro cao nhất lại là:
+object-level permission;
+upload/presign;
+MQTT credential lifecycle;
+media deletion;
+lịch chụp qua múi giờ/ngày;
+render và archive state machine.
+Đây là khoảng trống lớn nhất về độ tin cậy.
+Nợ kỹ thuật
+Django template UI cũ và React SPA mới vẫn tồn tại song song.
+api_views_old.py khoảng gần 2.000 dòng vẫn nằm trong source.
+Settings import local_settings hai lần.
+Có khá nhiều except Exception: pass, khiến lỗi storage/MQTT khó quan sát.
+camera_to_dict() query media mới nhất riêng cho từng camera, tạo nguy cơ N+1 ở danh sách 200 camera.
+Gallery dùng page-number/offset và chạy thêm count(); sẽ chậm khi số media tăng lớn.
+Render cuối cùng đọc toàn bộ MP4 vào RAM trước khi upload.
+CM4 config có camera code, MQTT secret và số SIM giả lập mặc định trong source.
+README CM4 mô tả entry point cũ, trong khi implementation mới đã tách thành src/main.py.
+Trạng thái kiểm chứng
+Mình chưa chạy được build/test thực tế vì môi trường host hiện không có npm và python, còn Docker socket không cho user hiện tại truy cập. Vì thế các kết luận trên dựa trên static inspection.
+Worktree cũng đang có thay đổi chưa commit:
+config/mosquitto/dynamic-security.json
+submodule backend
+trong backend có celerybeat-schedule và core/tasks.py bị sửa
+Mình không đụng vào các thay đổi này.
+Ưu tiên hợp lý cho sprint tiếp theo là:
+Sửa rò MQTT password và object-level permission của Site.
+Rotate, loại bỏ toàn bộ secret/private key khỏi Git.
+Sửa endpoint media download.
+Viết integration test cho RBAC và device upload.
+Dọn UI/API legacy và chuẩn hóa cấu hình deployment.

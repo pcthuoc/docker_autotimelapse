@@ -52,7 +52,7 @@ class HybridCameraBackend:
             "focus_mode": "AF-S", "autofocus": "On", "capture_mode": "Single Shot",
             "capture_target": "Memory Card", "high_iso_nr": "Off",
             "long_exp_nr": "Off", "liveview_af": "Normal Area",
-            "exposure_mode": "Manual", "focus_switch": "AF",
+            "exposure_mode": "Manual", "focus_switch": "AF", "aspect_ratio": "3:2",
             # Canon EOS specific defaults
             "drivemode": "Single", "mirror_lockup": "Off",
             "auto_power_off": "Off", "battery_level": "100%",
@@ -500,8 +500,8 @@ class HybridCameraBackend:
         capabilities = {
             k: {
                 "writable": v[1],
-                "current": self._sim_applied[k],
-                "choices": [self._sim_applied[k], "Option1", "Option2"] if v[1] else [],
+                "current": self._sim_applied.get(k, "Auto"),
+                "choices": [self._sim_applied.get(k, "Auto"), "Option1", "Option2"] if v[1] else [],
             }
             for k, v in SETTING_SPECS.items()
         }

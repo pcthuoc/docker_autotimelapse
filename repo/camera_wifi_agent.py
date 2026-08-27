@@ -19,6 +19,7 @@ import argparse
 import io
 import json
 import logging
+import os
 import random
 import sys
 import threading
@@ -46,8 +47,8 @@ except ImportError:
     sys.exit(1)
 
 # ── Cấu hình mặc định khi chạy Local ─────────────────────────────────────────
-DEFAULT_CAMERA_CODE   = "CAM-F53RQV"
-DEFAULT_MQTT_PASSWORD = "8_2Vhy43gl6GcPvMuDu3eQ"
+DEFAULT_CAMERA_CODE   = os.getenv("CAMERA_CODE", "CAM-EXAMPLE")
+DEFAULT_MQTT_PASSWORD = os.getenv("MQTT_PASSWORD", "")
 DEFAULT_MQTT_BROKER   = "mqtt.congnghetimelapse.com"
 DEFAULT_MQTT_PORT     = 1883
 DEFAULT_SERVER_BASE   = "https://cloud.congnghetimelapse.com"

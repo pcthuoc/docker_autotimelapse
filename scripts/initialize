@@ -15,6 +15,27 @@ mkdir -p data/postgres \
          data/mosquitto/data \
          data/mosquitto/log
 
+# Runtime secrets are ignored by Git. Create explicit local copies/templates.
+if [ ! -f "config/seaweed/s3.json" ]; then
+    cp config/seaweed/s3.json.example config/seaweed/s3.json
+    echo "CẢNH BÁO: Hãy thay credential placeholder trong config/seaweed/s3.json."
+fi
+
+if [ ! -f "config/mosquitto/dynamic-security.json" ]; then
+    cp config/mosquitto/dynamic-security.json.example config/mosquitto/dynamic-security.json
+    echo "CẢNH BÁO: Hãy khởi tạo Mosquitto Dynamic Security admin trước khi chạy production."
+fi
+
+if [ ! -f "config/nginx/ssl/nginx.key" ] || [ ! -f "config/nginx/ssl/nginx.crt" ]; then
+    mkdir -p config/nginx/ssl
+    openssl req -x509 -nodes -newkey rsa:2048 -days 30 \
+      -keyout config/nginx/ssl/nginx.key \
+      -out config/nginx/ssl/nginx.crt \
+      -subj "/CN=localhost"
+    chmod 600 config/nginx/ssl/nginx.key
+    echo "CẢNH BÁO: Đã tạo origin cert tạm. Thay bằng Cloudflare Origin Certificate."
+fi
+
 # 2. Tự động copy local_settings.py từ thư mục environment vào repo/backend/autotimelapse/
 if [ -f "environment/local_settings.py" ]; then
     echo "--> Copying environment/local_settings.py -> repo/backend/autotimelapse/local_settings.py"
@@ -35,17 +56,12 @@ if [ ! -f ".env" ] && [ -f "environment/site.env" ]; then
     cp environment/site.env .env
 fi
 
-# 4. Tự động khởi tạo S3 Bucket 'media' nếu container đang chạy
+# 4. Kiểm tra/khởi tạo S3 Bucket bằng credential từ environment, không hardcode secret
 if docker ps --format '{{.Names}}' | grep -q "atl-site"; then
     echo "--> Đang đảm bảo S3 Bucket 'media' tồn tại trên SeaweedFS..."
-    docker exec atl-site python manage.py shell -c "
-import boto3
-admin_s3 = boto3.client('s3', endpoint_url='http://seaweed-filer:8333', aws_access_key_id='atl_admin_98568b04f027', aws_secret_access_key='MDr62YtQcdK-_DHdiiMbuC6OjFnIjlVWSJT5gDC8qiA')
-buckets = [b['Name'] for b in admin_s3.list_buckets().get('Buckets', [])]
-if 'media' not in buckets:
-    admin_s3.create_bucket(Bucket='media')
-    print('Bucket media created.')
-" 2>/dev/null || true
+    docker exec atl-site python manage.py shell -c \
+      "from core.utils.storage import ensure_bucket; print(ensure_bucket())" \
+      || echo "CẢNH BÁO: Chưa tạo được bucket. Kiểm tra SEAWEED_* trong environment/site.env."
 fi
 
 echo "✅ Khởi tạo dự án hoàn tất thành công!"

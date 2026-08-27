@@ -1,0 +1,39 @@
+services:
+  headscale:
+    image: headscale/headscale:latest
+    container_name: headscale
+    restart: unless-stopped
+    command: serve
+    ports:
+      - "8085:8085"
+      - "9091:9091"
+      - "3478:3478/udp"
+    volumes:
+      - ./config:/etc/headscale
+      - ./data:/var/lib/headscale
+      - headscale_sock:/var/run/headscale
+    environment:
+      - TZ=Asia/Ho_Chi_Minh
+    networks:
+      - app-net
+
+  headscale-ui:
+    image: ghcr.io/gurucomputing/headscale-ui:latest
+    container_name: headscale_ui
+    restart: unless-stopped
+    ports:
+      - "9080:8080"
+    environment:
+      - TZ=Asia/Ho_Chi_Minh
+    depends_on:
+      - headscale
+    networks:
+      - app-net
+
+volumes:
+  headscale_sock:
+
+networks:
+  app-net:
+    name: ui_autotimelapse_app-net
+    external: true

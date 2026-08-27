@@ -1,0 +1,9 @@
+{
+  "code": "CAM-4MHNEK",
+  "secret": "-vnzG44UN13AH-q9WAL-JA",
+  "broker": "mqtt.congnghetimelapse.com",
+  "port": 1883,
+  "gpio_cm4_pin": 1,
+  "gpio_active_level": 1,
+  "telemetry_interval": 30
+}

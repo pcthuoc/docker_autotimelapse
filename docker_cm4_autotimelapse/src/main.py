@@ -447,7 +447,7 @@ class CameraAgent:
         """
         self._is_capturing = True
         try:
-            self.power_manager.power_on()
+            self._ensure_camera_ready()
 
             taken_at = datetime.now(timezone.utc).isoformat()
             captured_files = self.backend.capture(camera_code=self.code)
@@ -604,31 +604,35 @@ class CameraAgent:
             time.sleep(delay)
             log.info("🔌 [HOST POWEROFF] Đang thực hiện tắt máy an toàn (sync + SysRq poweroff)...")
             try:
-                # 1. Flush disk buffers
-                os.system("sync")
-                time.sleep(1)
+                if os.path.exists("/proc/sysrq-trigger"):
+                    with open("/proc/sysrq-trigger", "w") as f:
+                        f.write("s")
+                    time.sleep(0.5)
+                    with open("/proc/sysrq-trigger", "w") as f:
+                        f.write("u")
+                    time.sleep(0.5)
+                    with open("/proc/sysrq-trigger", "w") as f:
+                        f.write("o")
+            except Exception as e:
+                log.warning("SysRq trigger error: %s", e)
 
-                # 2. Kernel Magic SysRq (Sync -> Remount ReadOnly -> Poweroff)
-                try:
-                    if os.path.exists("/proc/sysrq-trigger"):
-                        with open("/proc/sysrq-trigger", "w") as f:
-                            f.write("s")
-                        time.sleep(0.5)
-                        with open("/proc/sysrq-trigger", "w") as f:
-                            f.write("u")
-                        time.sleep(0.5)
-                        with open("/proc/sysrq-trigger", "w") as f:
-                            f.write("o")
-                except Exception as e:
-                    log.warning("SysRq trigger error: %s", e)
-
-                # 3. Fallback qua D-Bus / standard poweroff
-                os.system('dbus-send --system --print-reply --dest=org.freedesktop.login1 /org/freedesktop/login1 "org.freedesktop.login1.Manager.PowerOff" boolean:true 2>/dev/null')
-                os.system("poweroff 2>/dev/null || shutdown -h now 2>/dev/null")
-            except Exception as exc:
-                log.error("Lỗi shutdown host: %s", exc)
+            os.system('dbus-send --system --print-reply --dest=org.freedesktop.login1 /org/freedesktop/login1 "org.freedesktop.login1.Manager.PowerOff" boolean:true 2>/dev/null')
+            os.system("poweroff 2>/dev/null || shutdown -h now 2>/dev/null")
 
         threading.Thread(target=_do_shutdown, name="host_shutdown_thread", daemon=True).start()
+
+    def _ensure_camera_ready(self):
+        """Tự động BẬT NGUỒN GPIO 16 và kết nối USB máy ảnh thật khi người dùng tương tác từ Web UI."""
+        self.operating_mode = "interactive"
+        was_off = not self.power_manager.is_powered
+        if was_off:
+            log.info("🔌 Máy ảnh đang TẮT — Tự động BẬT NGUỒN (GPIO 16) để thực hiện lệnh...")
+            self.power_manager.power_on()
+            time.sleep(self.power_manager.warmup_delay)
+
+        if not self.backend.use_real_hardware:
+            log.info("🔍 Thử khởi tạo lại kết nối máy ảnh thật qua gphoto2 (USB)...")
+            self.backend._try_init_real_camera()
 
     def process_command(self, req):
         cmd     = req.get("command", "")
@@ -640,6 +644,9 @@ class CameraAgent:
             if cmd in ("power_on_cm4", "power_on", "set_interactive_mode"):
                 self.operating_mode = "interactive"
                 self.power_manager.power_on()
+                if not self.backend.use_real_hardware:
+                    time.sleep(self.power_manager.warmup_delay)
+                    self.backend._try_init_real_camera()
                 resp = {"type": cmd, "request_id": rid, "status": "ok",
                         "data": {"cm4_power_state": "running", "mode": "interactive", "camera_power": "on", "message": "CM4 is online and running in interactive mode"}}
                 log.info("🎮 [MODE] Nhận lệnh %s từ Web UI -> Kích hoạt Chế độ Tương Tác (Bỏ qua Auto-Shutdown)", cmd)
@@ -658,11 +665,7 @@ class CameraAgent:
                         "data": {"camera_power": "off", "message": "Camera powered off"}}
 
             elif cmd == "set_settings":
-                if not self.power_manager.is_powered:
-                    log.info("🔌 Máy ảnh đang TẮT — Tự động BẬT NGUỒN để cài đặt thông số...")
-                    self.power_manager.power_on()
-                    time.sleep(self.power_manager.warmup_delay)
-                self.operating_mode = "interactive"
+                self._ensure_camera_ready()
                 applied, caps, mismatches = self.backend.set_settings(payload)
                 resp = {"type": cmd, "request_id": rid, "status": "ok",
                         "data": {"requested": payload, "applied": applied,
@@ -670,12 +673,8 @@ class CameraAgent:
                                  "camera_power": "on" if self.power_manager.is_powered else "off"}}
 
             elif cmd in ("get_settings", "get_capabilities", "get_status"):
-                # Khi bấm "Pull from device" (get_settings / get_capabilities): tự động bật nguồn nếu đang tắt
-                if cmd in ("get_settings", "get_capabilities") and not self.power_manager.is_powered:
-                    log.info("🔌 Máy ảnh đang TẮT — Tự động BẬT NGUỒN để kéo thông số phần cứng...")
-                    self.power_manager.power_on()
-                    time.sleep(self.power_manager.warmup_delay)
-                    self.operating_mode = "interactive"
+                if cmd in ("get_settings", "get_capabilities"):
+                    self._ensure_camera_ready()
 
                 applied, caps = self.backend.get_settings()
                 resp = {"type": cmd, "request_id": rid, "status": "ok",
@@ -717,7 +716,7 @@ class CameraAgent:
                         "data": {"count": len(schedules)}}
 
             elif cmd == "start_live_view":
-                self.power_manager.power_on()
+                self._ensure_camera_ready()
                 self.live_session_id = payload.get("session_id") or "lv-cm4"
                 self.live_fps = max(1, min(2, int(payload.get("fps") or 1)))
                 self.live_seq = 0
