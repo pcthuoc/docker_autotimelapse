@@ -534,28 +534,7 @@ class CameraAgent:
 
             return media_ids
         finally:
-            self._is_capturing = Falsee,
-                        "node": "cm4",
-                        "event": "cycle_capture_done",
-                        "triggered_by": triggered_by,
-                        "taken_at": taken_at,
-                        "media_count": len(media_ids),
-                    }),
-                    qos=1,
-                    retain=False,
-                )
-                log.info("📡 [CYCLE-EC25] Đã publish cycle_capture_done → EC25 nhận tín hiệu.")
-            except Exception as e:
-                log.warning("Không publish cycle_capture_done: %s", e)
-
-        if not self.live_session_id and not self.always_keep_power:
-            if self.capture_interval_sec == 0 or self.capture_interval_sec > 15:
-                # Ngắt kết nối USB gphoto2 trước khi tắt nguồn rơ-le
-                # để tránh gphoto2 giữ lock device, gây lỗi [-52][-7] ở lần chụp tiếp theo
-                self.backend.disconnect_real_camera()
-                self.power_manager.power_off()
-
-        return media_ids
+            self._is_capturing = False
 
     def _normalize_image_bytes(self, raw_bytes, preview_bytes=None):
         """Đảm bảo dữ liệu ảnh là JPEG hợp lệ với độ phân giải đầy đủ."""
