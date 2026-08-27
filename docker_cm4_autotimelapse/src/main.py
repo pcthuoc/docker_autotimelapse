@@ -730,7 +730,7 @@ class CameraAgent:
                 self.live_session_id = None
                 if self.backend:
                     self.backend.end_live_view()
-                if not self.always_keep_power and (self.capture_interval_sec == 0 or self.capture_interval_sec > 15):
+                if not self.always_keep_power and self.operating_mode != "interactive" and not self.force_power_on and (self.capture_interval_sec == 0 or self.capture_interval_sec > 15):
                     self.backend.disconnect_real_camera()
                     self.power_manager.power_off()
                 resp = {"type": cmd, "request_id": rid, "status": "ok",
