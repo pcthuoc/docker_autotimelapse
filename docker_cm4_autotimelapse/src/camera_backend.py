@@ -894,19 +894,55 @@ class HybridCameraBackend:
                                 break
 
                     # ── 5. TẢI FILE ẢNH VỀ CM4 ──
+                    # Chờ camera hoàn tất ghi vào Internal RAM trước khi download
+                    time.sleep(1.0)
+
                     files = []
                     for path in list(paths.values()):
                         ext = path.name.lower().split('.')[-1]
                         if ext in ("thm", "tif", "tiff") and len(paths) > 1:
                             continue
 
-                        try:
-                            camera_file = self._camera.file_get(path.folder, path.name, gp.GP_FILE_TYPE_NORMAL)
-                            data = bytes(camera_file.get_data_and_size())
+                        # Retry tải file khi gặp lỗi [-110] I/O in progress
+                        data = None
+                        for dl_attempt in range(1, 6):
+                            try:
+                                if self._context:
+                                    camera_file = self._camera.file_get(
+                                        path.folder, path.name,
+                                        gp.GP_FILE_TYPE_NORMAL, self._context
+                                    )
+                                else:
+                                    camera_file = self._camera.file_get(
+                                        path.folder, path.name,
+                                        gp.GP_FILE_TYPE_NORMAL
+                                    )
+                                data = bytes(camera_file.get_data_and_size())
+                                log.info("📥 [DOWNLOAD] Tải file %s thành công lần %d (%d bytes)",
+                                         path.name, dl_attempt, len(data))
+                                break
+                            except Exception as e_dl:
+                                log.warning("Lỗi tải file %s (lần %d): %s", path.name, dl_attempt, e_dl)
+                                if dl_attempt < 5:
+                                    time.sleep(1.5)  # Chờ camera xong I/O
 
+                        if data is None:
+                            log.error("❌ Không tải được file %s sau 5 lần", path.name)
+                            continue
+
+                        try:
                             preview_data = None
                             try:
-                                preview_file = self._camera.file_get(path.folder, path.name, gp.GP_FILE_TYPE_PREVIEW)
+                                if self._context:
+                                    preview_file = self._camera.file_get(
+                                        path.folder, path.name,
+                                        gp.GP_FILE_TYPE_PREVIEW, self._context
+                                    )
+                                else:
+                                    preview_file = self._camera.file_get(
+                                        path.folder, path.name,
+                                        gp.GP_FILE_TYPE_PREVIEW
+                                    )
                                 preview_data = bytes(preview_file.get_data_and_size())
                             except Exception:
                                 pass
@@ -918,7 +954,7 @@ class HybridCameraBackend:
 
                             files.append((path.name, data, preview_data))
                         except Exception as e_file:
-                            log.warning("Lỗi tải file %s: %s", path.name, e_file)
+                            log.warning("Lỗi post-download %s: %s", path.name, e_file)
 
                     if files:
                         log.info("✅ [REAL CAMERA] Chụp ảnh thật thành công (%d file, %d bytes)", len(files), len(files[0][1]))
