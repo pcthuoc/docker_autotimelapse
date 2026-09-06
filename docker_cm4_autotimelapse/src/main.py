@@ -66,6 +66,25 @@ FIRMWARE_VERSION = "cm4-autotimelapse-v2.0"
 USER_AGENT = "AutoTimelapse-CM4-Agent/2.0 (RaspberryPi CM4)"
 
 
+def optimize_network_mtu():
+    """
+    Tối ưu MTU và TCP MSS cho card mạng 4G (usb0) và Tailscale trên CM4.
+    Khắc phục triệt để hiện tượng PMTU Black Hole của mạng di động Viettel/EC25,
+    giúp upload ảnh dung lượng 2 - 3 MB mượt mà, không bị rớt gói hoặc timeout.
+    """
+    import subprocess
+    cmds = [
+        ["ip", "link", "set", "dev", "usb0", "mtu", "900"],
+        ["iptables", "-t", "mangle", "-A", "POSTROUTING", "-p", "tcp", "--tcp-flags", "SYN,RST", "SYN", "-o", "usb0", "-j", "TCPMSS", "--set-mss", "850"],
+        ["iptables", "-t", "mangle", "-A", "POSTROUTING", "-p", "tcp", "--tcp-flags", "SYN,RST", "SYN", "-o", "tailscale0", "-j", "TCPMSS", "--set-mss", "850"],
+    ]
+    for cmd in cmds:
+        try:
+            subprocess.run(cmd, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+
+
 class CameraAgent:
     """Quản lý luồng hoạt động chính của Camera Agent trên CM4."""
 
@@ -76,6 +95,7 @@ class CameraAgent:
                  auto_shutdown=AUTO_SHUTDOWN_AFTER_CAPTURE,
                  auto_capture_boot=AUTO_CAPTURE_ON_BOOT,
                  shutdown_delay=SHUTDOWN_DELAY_SEC):
+        optimize_network_mtu()
         self.code = code
         self.password = password
         self.broker = broker
@@ -389,6 +409,7 @@ class CameraAgent:
             return r.status, json.loads(r.read().decode() or "{}")
 
     def _http_put(self, url, data, content_type):
+        optimize_network_mtu()
         req = urllib.request.Request(url, data=data, method="PUT",
                                      headers={
                                          "Content-Type": content_type,
