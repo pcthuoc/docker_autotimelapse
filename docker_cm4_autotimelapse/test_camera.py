@@ -69,17 +69,80 @@ def test_real_camera_capture():
         log.info("👉 Quan sát đèn xanh trên máy ảnh nháy sáng!")
         
         file_path = None
+        files_saved = []
+
+        # Kiểm tra hỗ trợ Canon EOS Remote Release
         try:
-            file_path = cam.capture(gp.GP_CAPTURE_IMAGE)
-            log.info("🎉 [CAPTURE SUCCESS] Nháy màn trập thành công! File: %s/%s", file_path.folder, file_path.name)
-        except Exception as e_cap:
-            log.warning("⚠️ Lỗi capture(): %s. Thử trigger_capture()...", e_cap)
+            cfg = cam.get_config()
+            def _find_w(c, names):
+                for n in names:
+                    try:
+                        return c.get_child_by_name(n)
+                    except Exception:
+                        pass
+                for i in range(c.count_children()):
+                    try:
+                        sec = c.get_child(i)
+                        for n in names:
+                            try:
+                                return sec.get_child_by_name(n)
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                return None
+
+            w_ct = _find_w(cfg, ["capturetarget"])
+            if w_ct:
+                try:
+                    w_ct.set_value("Internal RAM")
+                    cam.set_config(cfg)
+                    log.info("🎯 Đã đặt capturetarget = Internal RAM")
+                except Exception:
+                    pass
+
+            w_rel = _find_w(cfg, ["eosremoterelease"])
+            if w_rel:
+                choices = [str(w_rel.get_choice(i)) for i in range(w_rel.count_choices())]
+                log.info("📷 Phát hiện Canon EOS Remote Release: choices=%s", choices)
+                if "Immediate" in choices:
+                    w_rel.set_value("Immediate")
+                    cam.set_config(cfg)
+                else:
+                    press_half = next((c for c in ["Press Half MF", "Press Half AF", "Press Half", "Press 1"] if c in choices), None)
+                    press_full = next((c for c in ["Press Full MF", "Press Full AF", "Press Full", "Press 2"] if c in choices), None)
+                    rel = next((c for c in ["Release", "Release Full", "Release Half", "None"] if c in choices), None)
+                    if press_half:
+                        w_rel.set_value(press_half)
+                        cam.set_config(cfg)
+                        time.sleep(0.3)
+                    if press_full:
+                        cfg = cam.get_config()
+                        w_rel = _find_w(cfg, ["eosremoterelease"])
+                        w_rel.set_value(press_full)
+                        cam.set_config(cfg)
+                        time.sleep(0.5)
+                    if rel:
+                        cfg = cam.get_config()
+                        w_rel = _find_w(cfg, ["eosremoterelease"])
+                        w_rel.set_value(rel)
+                        cam.set_config(cfg)
+                log.info("🎉 [CANON SHUTTER] Đã phát lệnh bấm màn trập Canon EOS thành công!")
+            else:
+                raise ValueError("Không có widget eosremoterelease")
+        except Exception as e_canon:
+            log.info("ℹ️ Chụp qua gphoto2 capture tiêu chuẩn (Không phải Canon EOS hoặc %s)...", e_canon)
             try:
-                cam.trigger_capture()
-                log.info("🎉 [TRIGGER SUCCESS] Gửi lệnh trigger_capture() thành công!")
-            except Exception as e_trig:
-                log.error("❌ trigger_capture() cũng lỗi: %s", e_trig)
-                return
+                file_path = cam.capture(gp.GP_CAPTURE_IMAGE)
+                log.info("🎉 [CAPTURE SUCCESS] Nháy màn trập thành công! File: %s/%s", file_path.folder, file_path.name)
+            except Exception as e_cap:
+                log.warning("⚠️ Lỗi capture(): %s. Thử trigger_capture()...", e_cap)
+                try:
+                    cam.trigger_capture()
+                    log.info("🎉 [TRIGGER SUCCESS] Gửi lệnh trigger_capture() thành công!")
+                except Exception as e_trig:
+                    log.error("❌ trigger_capture() cũng lỗi: %s", e_trig)
+                    return
 
         # 5. Chờ file ảnh mới
         log.info("5️⃣ Đang chờ máy ảnh lưu file và nạp dữ liệu qua USB...")

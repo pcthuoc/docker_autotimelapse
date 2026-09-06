@@ -77,24 +77,40 @@ w_rel, _ = find_w(config, ["eosremoterelease"])
 if not w_rel:
     print("❌ Không tìm thấy widget eosremoterelease!")
 else:
-    # 5a. Press Half MF
-    w_rel.set_value("Press Half MF")
-    camera.set_config(config, context)
-    time.sleep(0.3)
+    choices = [str(w_rel.get_choice(i)) for i in range(w_rel.count_choices())] if w_rel.get_type() in (5, 6) else []
+    print(f"📷 [CANON REMOTE] eosremoterelease choices: {choices}")
+    rel_choice = next((c for c in ["Release Full", "Release 2", "Release 1", "Release", "None"] if c in choices), "None" if "None" in choices else None)
 
-    # 5b. Press Full MF
-    config = camera.get_config(context)
-    w_rel, _ = find_w(config, ["eosremoterelease"])
-    w_rel.set_value("Press Full MF")
-    camera.set_config(config, context)
-    time.sleep(0.5)
+    triggered = False
+    if "Immediate" in choices:
+        print("📸 Sử dụng lệnh 'Immediate'...")
+        w_rel.set_value("Immediate")
+        camera.set_config(config, context)
+        time.sleep(0.4)
+        triggered = True
+    else:
+        press_full = next((c for c in ["Press Full", "Press 2", "Press 3"] if c in choices), None)
+        press_half = next((c for c in ["Press Half", "Press 1"] if c in choices), None)
+        if press_full:
+            if press_half:
+                try:
+                    w_rel.set_value(press_half)
+                    camera.set_config(config, context)
+                    time.sleep(0.2)
+                except Exception:
+                    pass
+            print(f"📸 Sử dụng lệnh '{press_full}'...")
+            w_rel.set_value(press_full)
+            camera.set_config(config, context)
+            time.sleep(0.4)
+            triggered = True
 
-    # 5c. Release
-    config = camera.get_config(context)
-    w_rel, _ = find_w(config, ["eosremoterelease"])
-    w_rel.set_value("Release")
-    camera.set_config(config, context)
-    print("✅ Đã kích hoạt màn trập thành công!")
+    if rel_choice:
+        try:
+            w_rel.set_value(rel_choice)
+            camera.set_config(config, context)
+        except Exception:
+            pass
 
     # 5d. Chờ file ảnh
     print("⏳ Đang chờ nhận file ảnh từ máy ảnh...")
@@ -110,8 +126,18 @@ else:
             downloaded = True
             break
 
+    # Fallback: Thử capture chuẩn nếu chưa nhận file
     if not downloaded:
-        print("⚠️ Chưa nhận được event FILE_ADDED sau 10s.")
+        print("⚠️ Chưa nhận được event FILE_ADDED qua eosremoterelease. Thử capture(GP_CAPTURE_IMAGE)...")
+        try:
+            file_path = camera.capture(gp.GP_CAPTURE_IMAGE, context)
+            print(f"🎉 Capture thành công: {file_path.folder}/{file_path.name}")
+            cam_file = camera.file_get(file_path.folder, file_path.name, gp.GP_FILE_TYPE_NORMAL)
+            data = bytes(cam_file.get_data_and_size())
+            print(f"🏆 THÀNH CÔNG RỰC RỠ! Đã tải ảnh: {len(data):,} bytes ({len(data)/1024/1024:.2f} MB)")
+            downloaded = True
+        except Exception as e_cap:
+            print(f"⚠️ Lỗi capture fallback: {e_cap}")
 
 # 6. Đóng kết nối và tắt nguồn máy ảnh
 camera.exit(context)

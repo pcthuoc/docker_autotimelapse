@@ -27,8 +27,8 @@ CANON_EOS_WARMUP_EXTRA_SEC = float(os.getenv("CANON_EOS_WARMUP_EXTRA_SEC", "5.0"
 I2C_BUS_ID             = int(os.getenv("I2C_BUS_ID", "1"))
 EMC2301_I2C_ADDR       = int(os.getenv("EMC2301_I2C_ADDR", "0x2F"), 16) if os.getenv("EMC2301_I2C_ADDR") else 0x2F
 ADS1115_I2C_ADDR       = int(os.getenv("ADS1115_I2C_ADDR", "0x49"), 16) if os.getenv("ADS1115_I2C_ADDR") else 0x49
-ADS1115_SOLAR_CHANNEL  = int(os.getenv("ADS1115_SOLAR_CHANNEL", "2"))    # Kênh 3 (Chân A2 - Solar)
-ADS1115_BATTERY_CHANNEL= int(os.getenv("ADS1115_BATTERY_CHANNEL", "3"))  # Kênh 4 (Chân A3 - Pin)
+ADS1115_SOLAR_CHANNEL  = int(os.getenv("ADS1115_SOLAR_CHANNEL", "2"))    # Kênh 2 (Chân A2 - Solar)
+ADS1115_BATTERY_CHANNEL= int(os.getenv("ADS1115_BATTERY_CHANNEL", "3"))  # Kênh 3 (Chân A3 - Pin)
 BATTERY_VOLTAGE_SCALE  = float(os.getenv("BATTERY_VOLTAGE_SCALE", "5.545"))  # Trở 22k/100k -> (100+22)/22 = 5.545
 SOLAR_VOLTAGE_SCALE    = float(os.getenv("SOLAR_VOLTAGE_SCALE", "5.545"))    # Trở 22k/100k -> (100+22)/22 = 5.545
 

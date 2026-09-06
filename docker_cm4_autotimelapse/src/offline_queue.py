@@ -104,5 +104,16 @@ class OfflineQueueManager:
                     else:
                         log.warning("⚠️ Upload lại ảnh offline %s chưa thành công. Sẽ thử lại lần sau...", json_file)
                         break
+                except (json.JSONDecodeError, ValueError) as e_json:
+                    log.warning("⚠️ File offline %s bị hỏng (%s) — Tiến hành xóa để tránh kẹt hàng đợi...", json_file, e_json)
+                    try:
+                        os.remove(json_path)
+                        base_prefix = json_path.rsplit('.', 1)[0]
+                        for f_ext in [".jpg", "_thumb.jpg"]:
+                            p_del = base_prefix + f_ext
+                            if os.path.exists(p_del):
+                                os.remove(p_del)
+                    except Exception:
+                        pass
                 except Exception as e:
                     log.error("Lỗi xử lý file offline %s: %s", json_file, e)

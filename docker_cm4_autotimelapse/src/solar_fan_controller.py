@@ -27,9 +27,13 @@ except (ImportError, RuntimeError):
 class SolarChargingFanController:
     """Quản lý quạt tản nhiệt sạc pin qua GPIO 19."""
 
-    def __init__(self, pin: int = 19, active_high: bool = True):
+    def __init__(self, pin: int = 19, active_high: bool = True, always_on: bool = None):
         self.pin = pin
         self.active_high = active_high
+        if always_on is not None:
+            self.always_on = always_on
+        else:
+            self.always_on = os.getenv("SOLAR_FAN_ALWAYS_ON", "true").lower() in ("true", "1", "yes")
         self.is_fan_on = False
         self.has_gpio = HAS_GPIO
 
@@ -41,9 +45,15 @@ class SolarChargingFanController:
                 GPIO.setmode(GPIO.BCM)
                 GPIO.setwarnings(False)
                 GPIO.setup(self.pin, GPIO.OUT)
-                off_state = GPIO.LOW if self.active_high else GPIO.HIGH
-                GPIO.output(self.pin, off_state)
-                log.info("🌬️ [SOLAR FAN] Khởi tạo thành công GPIO %d điều khiển quạt tản nhiệt sạc", self.pin)
+                if self.always_on:
+                    on_state = GPIO.HIGH if self.active_high else GPIO.LOW
+                    GPIO.output(self.pin, on_state)
+                    self.is_fan_on = True
+                    log.info("🌬️ [SOLAR FAN] Khởi tạo GPIO %d điều khiển quạt (CHẾ ĐỘ LUÔN BẬT 🟢)", self.pin)
+                else:
+                    off_state = GPIO.LOW if self.active_high else GPIO.HIGH
+                    GPIO.output(self.pin, off_state)
+                    log.info("🌬️ [SOLAR FAN] Khởi tạo thành công GPIO %d điều khiển quạt tản nhiệt sạc", self.pin)
             except Exception as e:
                 log.warning("⚠️ Không thể cấu hình GPIO %d cho quạt sạc: %s", self.pin, e)
                 self.has_gpio = False
@@ -53,11 +63,28 @@ class SolarChargingFanController:
     def evaluate(self, v_ads_ch2: float, solar_voltage: float, custom_hour: int = None) -> tuple:
         """
         Đánh giá logic điều khiển quạt:
+        - Nếu always_on = True -> Luôn BẬT.
         - Ban ngày (07:00 -> 16:00): Bật nếu Kênh 2 > 4.5V HOẶC Solar > 15.0V.
         - Ban đêm (ngoài 07:00 - 16:00): Vẫn BẬT nếu đồng thời Kênh 2 > 4.5V VÀ Solar > 15.0V.
         Trả về: (should_run_bool, reason_str, debug_dict)
         """
         hour = custom_hour if custom_hour is not None else datetime.now().hour
+
+        if self.always_on:
+            should_run = True
+            reason = "CHẾ ĐỘ LUÔN BẬT (SOLAR_FAN_ALWAYS_ON=true)"
+            debug = {
+                "gpio_pin": self.pin,
+                "fan_running": True,
+                "hour": hour,
+                "is_daytime": True,
+                "ads_ch2_voltage": v_ads_ch2,
+                "solar_voltage": solar_voltage,
+                "ch2_high": True,
+                "solar_high": True,
+                "reason": reason,
+            }
+            return should_run, reason, debug
 
         is_daytime = (7 <= hour < 16)
         ch2_high = (v_ads_ch2 is not None and v_ads_ch2 > 4.5)
@@ -92,23 +119,21 @@ class SolarChargingFanController:
         """Cập nhật trạng thái phần cứng GPIO 19 theo điều kiện đo được."""
         should_run, reason, debug = self.evaluate(v_ads_ch2, solar_voltage, custom_hour=custom_hour)
 
+        if self.has_gpio:
+            try:
+                target_state = (GPIO.HIGH if self.active_high else GPIO.LOW) if should_run else (GPIO.LOW if self.active_high else GPIO.HIGH)
+                GPIO.output(self.pin, target_state)
+            except Exception as e:
+                log.warning("Lỗi ghi GPIO %d: %s", self.pin, e)
+
         if should_run != self.is_fan_on:
             self.is_fan_on = should_run
-            if self.has_gpio:
-                try:
-                    on_state = GPIO.HIGH if self.active_high else GPIO.LOW
-                    off_state = GPIO.LOW if self.active_high else GPIO.HIGH
-                    state = on_state if self.is_fan_on else off_state
-                    GPIO.output(self.pin, state)
-                except Exception as e:
-                    log.warning("Lỗi ghi GPIO %d: %s", self.pin, e)
-
             log.info("🌬️ [SOLAR FAN GPIO %d] %s -> %s", self.pin, "BẬT QUẠT 🟢" if self.is_fan_on else "TẮT QUẠT ⚪", reason)
 
         return debug
 
     def cleanup(self):
-        if self.has_gpio:
+        if self.has_gpio and not self.always_on:
             try:
                 off_state = GPIO.LOW if self.active_high else GPIO.HIGH
                 GPIO.output(self.pin, off_state)

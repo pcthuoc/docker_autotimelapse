@@ -775,8 +775,8 @@ class HybridCameraBackend:
                                 log.info("📷 [CANON REMOTE] eosremoterelease choices: %s", choices)
 
                                 # Tìm lựa chọn release phù hợp
-                                # Canon 5D Mark III dùng "Release Full", các máy khác dùng "Release", "None"
-                                rel_choice = next((c for c in ["Release Full", "Release Half", "Release 2", "Release 1", "Release", "None"] if c in choices), "None" if "None" in choices else None)
+                                # Canon 5D Mark III dùng "Release", các máy khác dùng "Release Full", "None"
+                                rel_choice = next((c for c in ["Release", "Release Full", "Release Half", "Release 2", "Release 1", "None"] if c in choices), "None" if "None" in choices else None)
 
                                 triggered = False
                                 # Ưu tiên 1: Lệnh "Immediate" (chuẩn nhất cho Canon EOS trên gphoto2)
@@ -907,16 +907,10 @@ class HybridCameraBackend:
                         data = None
                         for dl_attempt in range(1, 6):
                             try:
-                                if self._context:
-                                    camera_file = self._camera.file_get(
-                                        path.folder, path.name,
-                                        gp.GP_FILE_TYPE_NORMAL, self._context
-                                    )
-                                else:
-                                    camera_file = self._camera.file_get(
-                                        path.folder, path.name,
-                                        gp.GP_FILE_TYPE_NORMAL
-                                    )
+                                camera_file = self._camera.file_get(
+                                    path.folder, path.name,
+                                    gp.GP_FILE_TYPE_NORMAL
+                                )
                                 data = bytes(camera_file.get_data_and_size())
                                 log.info("📥 [DOWNLOAD] Tải file %s thành công lần %d (%d bytes)",
                                          path.name, dl_attempt, len(data))
@@ -933,16 +927,10 @@ class HybridCameraBackend:
                         try:
                             preview_data = None
                             try:
-                                if self._context:
-                                    preview_file = self._camera.file_get(
-                                        path.folder, path.name,
-                                        gp.GP_FILE_TYPE_PREVIEW, self._context
-                                    )
-                                else:
-                                    preview_file = self._camera.file_get(
-                                        path.folder, path.name,
-                                        gp.GP_FILE_TYPE_PREVIEW
-                                    )
+                                preview_file = self._camera.file_get(
+                                    path.folder, path.name,
+                                    gp.GP_FILE_TYPE_PREVIEW
+                                )
                                 preview_data = bytes(preview_file.get_data_and_size())
                             except Exception:
                                 pass
@@ -959,6 +947,9 @@ class HybridCameraBackend:
                     if files:
                         log.info("✅ [REAL CAMERA] Chụp ảnh thật thành công (%d file, %d bytes)", len(files), len(files[0][1]))
                         return files
+                    else:
+                        log.warning("⚠️ Không nhận được ảnh từ máy ảnh thật — Reset gphoto2 để tránh kẹt trạng thái...")
+                        self.disconnect_real_camera()
                 except Exception as e:
                     log.error("Lỗi chụp trên máy ảnh thật: %s — Đóng kết nối & Chuyển sang Giả lập...", e)
                     self.disconnect_real_camera()
