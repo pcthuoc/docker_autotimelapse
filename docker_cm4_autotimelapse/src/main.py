@@ -34,25 +34,7 @@ import urllib.error
 import socket
 from datetime import datetime, timezone
 
-# ── Khắc phục PMTU Black Hole của sim 4G Viettel (EC25) ────────────────────
-# Patch socket.connect để set:
-#   - TCP_MAXSEG = 800: giới hạn segment size → CM4 báo remote gửi nhỏ lại
-#   - SO_SNDBUF = 8192: buộc TCP send buffer nhỏ → kernel gửi từng chunk nhỏ
-#   - TCP_NODELAY: tắt Nagle → flush ngay, không gom packet lớn
-# Kết hợp upload chunked 8KB/lần trong _http_put → tránh packet > 950 bytes
-_orig_socket_connect = socket.socket.connect
 
-def _cellular_safe_connect(self, address):
-    try:
-        if self.type == socket.SOCK_STREAM:
-            self.setsockopt(socket.IPPROTO_TCP, socket.TCP_MAXSEG, 800)
-            self.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 8192)
-            self.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-    except Exception:
-        pass
-    return _orig_socket_connect(self, address)
-
-socket.socket.connect = _cellular_safe_connect
 
 from PIL import Image
 
@@ -398,7 +380,7 @@ class CameraAgent:
                 "User-Agent": USER_AGENT,
             },
         )
-        with urllib.request.urlopen(req, timeout=15) as r:
+        with urllib.request.urlopen(req, timeout=30) as r:
             return r.status, json.loads(r.read().decode() or "{}")
 
     def _http_post_frame(self, session_id, seq, frame_bytes):
@@ -418,58 +400,18 @@ class CameraAgent:
             return r.status, json.loads(r.read().decode() or "{}")
 
     def _http_put(self, url, data, content_type):
-        """Upload bytes lên presigned URL dùng chunked send 8KB/chunk.
-
-        Tránh PMTU Black Hole 4G Viettel (EC25): packet > ~950 bytes bị drop
-        silently. SO_SNDBUF=8192 + TCP_NODELAY được set trong socket monkey-patch.
-        Chunk size 8192 đảm bảo mỗi write() vào socket nhỏ hơn 9KB → kernel
-        chia thành nhiều segment TCP nhỏ hơn giới hạn MTU của đường 4G.
-        Timeout 300s cho 3MB ở tốc độ 10 KB/s (~5 phút).
-        """
-        import http.client
-        import ssl
-        from urllib.parse import urlparse
-
-        parsed = urlparse(url)
-        is_https = parsed.scheme == "https"
-        host = parsed.netloc
-        path = parsed.path
-        if parsed.query:
-            path += "?" + parsed.query
-
-        CHUNK = 8192  # 8 KB/chunk — nhỏ hơn MTU 4G thực tế (~1400B) nhưng TCP sẽ tự chia
-        total = len(data)
-
-        if is_https:
-            ctx = ssl.create_default_context()
-            conn = http.client.HTTPSConnection(host, timeout=300, context=ctx)
-        else:
-            conn = http.client.HTTPConnection(host, timeout=300)
-
-        try:
-            conn.connect()
-            conn.putrequest("PUT", path)
-            conn.putheader("Content-Type", content_type)
-            conn.putheader("Content-Length", str(total))
-            conn.putheader("User-Agent", USER_AGENT)
-            conn.endheaders()
-
-            # Gửi từng chunk 8KB — buộc kernel flush thường xuyên
-            offset = 0
-            last_logged = 0
-            while offset < total:
-                chunk = data[offset:offset + CHUNK]
-                conn.send(chunk)
-                offset += len(chunk)
-                if offset - last_logged >= 500 * 1024 or offset == total:
-                    log.info("📤 [PUT PROGRESS] %d / %d KB (%.1f%%)", offset // 1024, total // 1024, offset * 100.0 / total)
-                    last_logged = offset
-
-            resp = conn.getresponse()
-            resp.read()  # drain body
-            return resp.status
-        finally:
-            conn.close()
+        """Upload dữ liệu ảnh lên presigned URL (timeout 300s)."""
+        log.info("📤 [HTTP PUT] Đang upload %.2f MB lên storage...", len(data) / (1024 * 1024))
+        req = urllib.request.Request(
+            url, data=data, method="PUT",
+            headers={
+                "Content-Type": content_type,
+                "User-Agent": USER_AGENT,
+            }
+        )
+        with urllib.request.urlopen(req, timeout=300) as r:
+            log.info("✅ [HTTP PUT] Hoàn tất PUT status=%s", r.status)
+            return r.status
 
     # ── Upload ────────────────────────────────────────────────────────────────
 
