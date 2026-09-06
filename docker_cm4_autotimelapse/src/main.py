@@ -394,7 +394,7 @@ class CameraAgent:
                                          "Content-Type": content_type,
                                          "User-Agent": USER_AGENT,
                                      })
-        with urllib.request.urlopen(req, timeout=30) as r:
+        with urllib.request.urlopen(req, timeout=120) as r:
             return r.status
 
     # ── Upload ────────────────────────────────────────────────────────────────
