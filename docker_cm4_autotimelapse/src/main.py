@@ -34,16 +34,20 @@ import urllib.error
 import socket
 from datetime import datetime, timezone
 
-# ── Khắc phục triệt để lỗi PMTU Black Hole của sim 4G Viettel (EC25) ────────
-# Tự động gán TCP_MAXSEG = 850 bytes trước khi thực hiện mọi kết nối TCP.
-# Tránh việc nhà mạng 4G âm thầm drop các packet lớn hơn 950 bytes gây lỗi
-# "The write operation timed out" khi tải ảnh lên S3/R2.
+# ── Khắc phục PMTU Black Hole của sim 4G Viettel (EC25) ────────────────────
+# Patch socket.connect để set:
+#   - TCP_MAXSEG = 800: giới hạn segment size → CM4 báo remote gửi nhỏ lại
+#   - SO_SNDBUF = 8192: buộc TCP send buffer nhỏ → kernel gửi từng chunk nhỏ
+#   - TCP_NODELAY: tắt Nagle → flush ngay, không gom packet lớn
+# Kết hợp upload chunked 8KB/lần trong _http_put → tránh packet > 950 bytes
 _orig_socket_connect = socket.socket.connect
 
 def _cellular_safe_connect(self, address):
     try:
         if self.type == socket.SOCK_STREAM:
-            self.setsockopt(socket.IPPROTO_TCP, socket.TCP_MAXSEG, 850)
+            self.setsockopt(socket.IPPROTO_TCP, socket.TCP_MAXSEG, 800)
+            self.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 8192)
+            self.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
     except Exception:
         pass
     return _orig_socket_connect(self, address)
@@ -84,22 +88,10 @@ USER_AGENT = "AutoTimelapse-CM4-Agent/2.0 (RaspberryPi CM4)"
 
 
 def optimize_network_mtu():
+    """No-op: ip/iptables không có trong container Debian-slim.
+    MSS/SNDBUF được patch qua socket.connect monkey-patch ở đầu file.
     """
-    Tối ưu MTU và TCP MSS cho card mạng 4G (usb0) và Tailscale trên CM4.
-    Khắc phục triệt để hiện tượng PMTU Black Hole của mạng di động Viettel/EC25,
-    giúp upload ảnh dung lượng 2 - 3 MB mượt mà, không bị rớt gói hoặc timeout.
-    """
-    import subprocess
-    cmds = [
-        ["ip", "link", "set", "dev", "usb0", "mtu", "900"],
-        ["iptables", "-t", "mangle", "-A", "POSTROUTING", "-p", "tcp", "--tcp-flags", "SYN,RST", "SYN", "-o", "usb0", "-j", "TCPMSS", "--set-mss", "850"],
-        ["iptables", "-t", "mangle", "-A", "POSTROUTING", "-p", "tcp", "--tcp-flags", "SYN,RST", "SYN", "-o", "tailscale0", "-j", "TCPMSS", "--set-mss", "850"],
-    ]
-    for cmd in cmds:
-        try:
-            subprocess.run(cmd, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except Exception:
-            pass
+    pass
 
 
 class CameraAgent:
@@ -426,14 +418,54 @@ class CameraAgent:
             return r.status, json.loads(r.read().decode() or "{}")
 
     def _http_put(self, url, data, content_type):
-        optimize_network_mtu()
-        req = urllib.request.Request(url, data=data, method="PUT",
-                                     headers={
-                                         "Content-Type": content_type,
-                                         "User-Agent": USER_AGENT,
-                                     })
-        with urllib.request.urlopen(req, timeout=120) as r:
-            return r.status
+        """Upload bytes lên presigned URL dùng chunked send 8KB/chunk.
+
+        Tránh PMTU Black Hole 4G Viettel (EC25): packet > ~950 bytes bị drop
+        silently. SO_SNDBUF=8192 + TCP_NODELAY được set trong socket monkey-patch.
+        Chunk size 8192 đảm bảo mỗi write() vào socket nhỏ hơn 9KB → kernel
+        chia thành nhiều segment TCP nhỏ hơn giới hạn MTU của đường 4G.
+        Timeout 300s cho 3MB ở tốc độ 10 KB/s (~5 phút).
+        """
+        import http.client
+        import ssl
+        from urllib.parse import urlparse
+
+        parsed = urlparse(url)
+        is_https = parsed.scheme == "https"
+        host = parsed.netloc
+        path = parsed.path
+        if parsed.query:
+            path += "?" + parsed.query
+
+        CHUNK = 8192  # 8 KB/chunk — nhỏ hơn MTU 4G thực tế (~1400B) nhưng TCP sẽ tự chia
+        total = len(data)
+
+        if is_https:
+            ctx = ssl.create_default_context()
+            conn = http.client.HTTPSConnection(host, timeout=300, context=ctx)
+        else:
+            conn = http.client.HTTPConnection(host, timeout=300)
+
+        try:
+            conn.connect()
+            conn.putrequest("PUT", path)
+            conn.putheader("Content-Type", content_type)
+            conn.putheader("Content-Length", str(total))
+            conn.putheader("User-Agent", USER_AGENT)
+            conn.endheaders()
+
+            # Gửi từng chunk 8KB — buộc kernel flush thường xuyên
+            offset = 0
+            while offset < total:
+                chunk = data[offset:offset + CHUNK]
+                conn.send(chunk)
+                offset += len(chunk)
+
+            resp = conn.getresponse()
+            resp.read()  # drain body
+            return resp.status
+        finally:
+            conn.close()
 
     # ── Upload ────────────────────────────────────────────────────────────────
 
