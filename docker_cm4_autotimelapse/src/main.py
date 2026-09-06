@@ -31,7 +31,24 @@ import threading
 import queue as _queue
 import urllib.request
 import urllib.error
+import socket
 from datetime import datetime, timezone
+
+# ── Khắc phục triệt để lỗi PMTU Black Hole của sim 4G Viettel (EC25) ────────
+# Tự động gán TCP_MAXSEG = 850 bytes trước khi thực hiện mọi kết nối TCP.
+# Tránh việc nhà mạng 4G âm thầm drop các packet lớn hơn 950 bytes gây lỗi
+# "The write operation timed out" khi tải ảnh lên S3/R2.
+_orig_socket_connect = socket.socket.connect
+
+def _cellular_safe_connect(self, address):
+    try:
+        if self.type == socket.SOCK_STREAM:
+            self.setsockopt(socket.IPPROTO_TCP, socket.TCP_MAXSEG, 850)
+    except Exception:
+        pass
+    return _orig_socket_connect(self, address)
+
+socket.socket.connect = _cellular_safe_connect
 
 from PIL import Image
 
