@@ -456,10 +456,14 @@ class CameraAgent:
 
             # Gửi từng chunk 8KB — buộc kernel flush thường xuyên
             offset = 0
+            last_logged = 0
             while offset < total:
                 chunk = data[offset:offset + CHUNK]
                 conn.send(chunk)
                 offset += len(chunk)
+                if offset - last_logged >= 500 * 1024 or offset == total:
+                    log.info("📤 [PUT PROGRESS] %d / %d KB (%.1f%%)", offset // 1024, total // 1024, offset * 100.0 / total)
+                    last_logged = offset
 
             resp = conn.getresponse()
             resp.read()  # drain body
@@ -484,9 +488,16 @@ class CameraAgent:
                 log.error("Lỗi xin Presigned URL: status=%s resp=%s", st, pre)
                 return False, None
 
-            self._http_put(pre["url"], final_bytes, content_type)
+            st_put = self._http_put(pre["url"], final_bytes, content_type)
+            if st_put not in (200, 204):
+                log.error("Lỗi PUT ảnh chính: status=%s url=%s", st_put, pre.get("url"))
+                return False, None
+
             if thumb_bytes and "thumb_url" in pre:
-                self._http_put(pre["thumb_url"], thumb_bytes, "image/jpeg")
+                st_thumb = self._http_put(pre["thumb_url"], thumb_bytes, "image/jpeg")
+                if st_thumb not in (200, 204):
+                    log.error("Lỗi PUT thumb: status=%s", st_thumb)
+                    return False, None
 
             st, done = self._http_post_json("/api/device/upload/complete/", {
                 "media_id": pre["media_id"],

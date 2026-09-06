@@ -52,10 +52,14 @@ class OfflineQueueManager:
                 log.error("❌ Không thể lưu ảnh vào hàng đợi offline: %s", e)
 
     def process_pending_queue(self, upload_fn):
-        """Duyệt các ảnh pending và thử gửi lại server."""
+        """Duyệt các ảnh pending và thử gửi lại server. Ưu tiên ảnh mới nhất trước."""
         with self._lock:
             try:
-                json_files = sorted([f for f in os.listdir(self.queue_dir) if f.endswith(".json") and f.startswith("pending_")])
+                # Sắp xếp mới nhất lên đầu để ảnh vừa chụp được gửi ngay
+                json_files = sorted(
+                    [f for f in os.listdir(self.queue_dir) if f.endswith(".json") and f.startswith("pending_")],
+                    reverse=True
+                )
             except Exception as e:
                 log.error("Lỗi đọc thư mục offline queue: %s", e)
                 return
@@ -63,7 +67,8 @@ class OfflineQueueManager:
             if not json_files:
                 return
 
-            log.info("🔄 [OFFLINE QUEUE] Phát hiện %d ảnh chờ upload lại...", len(json_files))
+            log.info("🔄 [OFFLINE QUEUE] Phát hiện %d ảnh chờ upload lại (ưu tiên mới nhất)...", len(json_files))
+            consecutive_net_fails = 0
             for json_file in json_files:
                 json_path = os.path.join(self.queue_dir, json_file)
                 try:
@@ -77,6 +82,9 @@ class OfflineQueueManager:
                         os.remove(json_path)
                         continue
 
+                    file_size = os.path.getsize(img_path)
+                    retry_count = meta.get("retry_count", 0)
+
                     with open(img_path, "rb") as f:
                         image_bytes = f.read()
 
@@ -89,9 +97,12 @@ class OfflineQueueManager:
                                 thumb_bytes = f.read()
 
                     # Thử upload lại
+                    log.info("📤 [OFFLINE QUEUE] Đang upload lại %s (size: %.2f MB, lần thử: %d)...",
+                             json_file, file_size / (1024 * 1024), retry_count + 1)
                     ok, media_id = upload_fn(image_bytes, thumb_bytes, meta)
                     if ok:
-                        log.info("🎉 [OFFLINE QUEUE SUCCESS] Đã gửi lại ảnh offline thành công! media_id=%s", media_id)
+                        log.info("🎉 [OFFLINE QUEUE SUCCESS] Đã gửi lại ảnh offline thành công! media_id=%s file=%s", media_id, json_file)
+                        consecutive_net_fails = 0
                         try:
                             os.remove(json_path)
                             os.remove(img_path)
@@ -102,8 +113,20 @@ class OfflineQueueManager:
                         except Exception as e:
                             log.warning("Lỗi dọn dẹp file offline: %s", e)
                     else:
-                        log.warning("⚠️ Upload lại ảnh offline %s chưa thành công. Sẽ thử lại lần sau...", json_file)
-                        break
+                        consecutive_net_fails += 1
+                        meta["retry_count"] = retry_count + 1
+                        try:
+                            with open(json_path, "w", encoding="utf-8") as f:
+                                json.dump(meta, f, indent=2)
+                        except Exception:
+                            pass
+
+                        log.warning("⚠️ Upload lại ảnh offline %s chưa thành công (size: %.2f MB).",
+                                    json_file, file_size / (1024 * 1024))
+                        # Nếu mất mạng hoàn toàn (3 file liên tiếp fail) thì dừng vòng lặp
+                        if consecutive_net_fails >= 3:
+                            log.warning("⚠️ Kết nối mạng không ổn định (3 file fail liên tiếp). Tạm dừng đợt retry này...")
+                            break
                 except (json.JSONDecodeError, ValueError) as e_json:
                     log.warning("⚠️ File offline %s bị hỏng (%s) — Tiến hành xóa để tránh kẹt hàng đợi...", json_file, e_json)
                     try:
